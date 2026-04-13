@@ -1,0 +1,20 @@
+# Docker Compose para desenvolvimento/teste local
+version: "3.8"
+
+services:
+  ekyte-mcp:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - TRANSPORT=http
+      - PORT=3000
+      - EKYTE_API_KEY=${EKYTE_API_KEY}
+      - EKYTE_BEARER_TOKEN=${EKYTE_BEARER_TOKEN}
+      - EKYTE_COMPANY_ID=${EKYTE_COMPANY_ID}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
