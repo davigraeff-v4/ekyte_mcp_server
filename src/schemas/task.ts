@@ -15,10 +15,10 @@ import {
 // ============ List Tasks ============
 
 export const ListTasksSchema = z.object({
+  search: z.string().trim().min(1).optional()
+    .describe("Filtro de texto (case-insensitive) no título da tarefa. Ex: 'playbook'."),
   workspace_id: z.number().int().positive().optional()
     .describe("ID do workspace para filtrar. Use ekyte_list_workspaces para descobrir."),
-  project_id: z.number().int().positive().optional()
-    .describe("ID do projeto para filtrar."),
   status: z.number()
     .int()
     .optional()
@@ -27,8 +27,8 @@ export const ListTasksSchema = z.object({
     .describe("ID do tipo de tarefa para filtrar. Use ekyte_list_task_types para descobrir."),
   phase_id: z.number().int().positive().optional()
     .describe("ID da etapa atual para filtrar."),
-  squad_id: z.number().int().positive().optional()
-    .describe("ID da squad para filtrar (quando informado, workspace é ignorado)."),
+  executor_id: UserIdSchema.optional()
+    .describe("UUID do responsável para filtrar. Use ekyte_list_users para descobrir."),
   created_from: DateSchema.optional()
     .describe("Filtrar tasks criadas a partir desta data (AAAA-MM-DD)"),
   created_to: DateSchema.optional()
@@ -37,22 +37,8 @@ export const ListTasksSchema = z.object({
     .describe("Filtrar por data de entrega a partir de (AAAA-MM-DD)"),
   due_to: DateSchema.optional()
     .describe("Filtrar por data de entrega até (AAAA-MM-DD)"),
-  phase_date_from: DateSchema.optional()
-    .describe("Filtrar por data de etapa a partir de (AAAA-MM-DD)"),
-  phase_date_to: DateSchema.optional()
-    .describe("Filtrar por data de etapa até (AAAA-MM-DD)"),
-  resolved_date_from: DateSchema.optional()
-    .describe("Filtrar por data de conclusão a partir de (AAAA-MM-DD)"),
-  resolved_date_to: DateSchema.optional()
-    .describe("Filtrar por data de conclusão até (AAAA-MM-DD)"),
-  include_checklist: z.boolean().default(false)
-    .describe("Se true, retorna os checklists da tarefa"),
-  include_phases: z.boolean().default(false)
-    .describe("Se true, retorna as etapas da tarefa"),
-  include_comments: z.boolean().default(false)
-    .describe("Se true, retorna os comentários da tarefa"),
   page: z.number().int().min(1).default(1)
-    .describe("Número da página (inicia em 1)"),
+    .describe("Página do resultado filtrado (paginação client-side, 50 por página)."),
   response_format: z.nativeEnum(ResponseFormat)
     .default(ResponseFormat.MARKDOWN)
     .describe("Formato de saída"),
@@ -64,12 +50,6 @@ export type ListTasksInput = z.infer<typeof ListTasksSchema>;
 
 export const GetTaskSchema = z.object({
   task_id: TaskIdSchema,
-  include_checklist: z.boolean().default(true)
-    .describe("Se true, retorna os checklists da tarefa"),
-  include_phases: z.boolean().default(true)
-    .describe("Se true, retorna as etapas da tarefa"),
-  include_comments: z.boolean().default(true)
-    .describe("Se true, retorna os comentários da tarefa"),
   response_format: z.nativeEnum(ResponseFormat)
     .default(ResponseFormat.MARKDOWN)
     .describe("Formato de saída"),

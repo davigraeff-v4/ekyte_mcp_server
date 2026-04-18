@@ -68,17 +68,17 @@ export type CreateTimeEntryWithoutTaskInput = z.infer<typeof CreateTimeEntryWith
 export const ListTimeEntriesSchema = z.object({
   workspace_id: WorkspaceIdSchema,
   date_from: DateSchema
-    .optional()
-    .describe("Data inicial do filtro no formato AAAA-MM-DD"),
+    .describe("Data inicial do filtro no formato AAAA-MM-DD (obrigatório)"),
   date_to: DateSchema
-    .optional()
-    .describe("Data final do filtro no formato AAAA-MM-DD"),
+    .describe("Data final do filtro no formato AAAA-MM-DD (obrigatório)"),
   user_id: z.string()
     .uuid()
     .optional()
     .describe("UUID do usuário para filtrar apontamentos. Use ekyte_list_users para descobrir."),
+  task_id: z.number().int().positive().optional()
+    .describe("ID da tarefa para filtrar apontamentos específicos dela."),
   page: z.number().int().min(1).default(1)
-    .describe("Número da página"),
+    .describe("Página do resultado (paginação client-side, 50 por página)."),
   response_format: z.nativeEnum(ResponseFormat)
     .default(ResponseFormat.MARKDOWN)
     .describe("Formato de saída"),

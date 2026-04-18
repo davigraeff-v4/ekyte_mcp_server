@@ -28,11 +28,38 @@ import type { EkyteWorkspace, EkyteUser, EkyteTaskType, EkyteTask } from "../typ
 // ============ Helpers ============
 
 const PAGE_SIZE = 50;
+// Ekyte's /ctc-tasks endpoint caps results internally; fetch with a high limit
+// so client-side pagination sees as much data as the API is willing to give.
+const TASKS_FETCH_LIMIT = 5000;
 
 function formatResponse(data: unknown, markdown: string, format: ResponseFormat) {
-  const textContent = format === ResponseFormat.MARKDOWN
-    ? markdown
-    : JSON.stringify(data, null, 2);
+  if (format === ResponseFormat.JSON) {
+    const json = JSON.stringify(data, null, 2);
+    if (json.length <= CHARACTER_LIMIT) return json;
+    // Too big. Preserve structure and cut the items array so the JSON stays valid.
+    const d = data as { items?: unknown[] } & Record<string, unknown>;
+    if (Array.isArray(d?.items) && d.items.length > 1) {
+      const reduced: Record<string, unknown> = { ...d };
+      let keep = Math.max(1, Math.floor(d.items.length / 2));
+      while (keep > 0) {
+        reduced.items = d.items.slice(0, keep);
+        reduced.truncated = true;
+        reduced.truncated_kept = keep;
+        reduced.truncated_total_in_page = d.items.length;
+        reduced.hint = "Resposta encurtada para caber no limite. Refine com `search` ou mais filtros.";
+        const out = JSON.stringify(reduced, null, 2);
+        if (out.length <= CHARACTER_LIMIT) return out;
+        keep = Math.floor(keep / 2);
+      }
+    }
+    const fallback = {
+      error: "response_too_large",
+      message: "JSON excede o limite de caracteres. Use `search` para filtrar ou avance a `page`.",
+      hint: "Se já paginou, reduza o escopo filtrando por workspace/task_type/datas.",
+    };
+    return JSON.stringify(fallback, null, 2);
+  }
+  const textContent = markdown;
   if (textContent.length > CHARACTER_LIMIT) {
     return textContent.substring(0, CHARACTER_LIMIT) +
       "\n\n⚠️ Resposta truncada. Use o parâmetro `search` para filtrar por nome, ou avance a `page`.";
@@ -70,12 +97,14 @@ export function registerReadTools(server: McpServer): void {
     "ekyte_list_workspaces",
     {
       title: "Listar Workspaces do Ekyte",
-      description: `Lista todos os workspaces (clientes/projetos) da empresa no Ekyte.
+      description: `Lista workspaces (clientes/projetos) da empresa no Ekyte.
 
-Use PRIMEIRO para descobrir o workspace_id antes de criar tasks ou apontar horas.
-Retorna: id, nome, status (ativo/inativo), idioma padrão.
+👉 PREFIRA usar o parâmetro "search" para achar um workspace pelo nome (ex: search="ferraz" acha "V4 Ferraz Piai"). É mais rápido que iterar páginas.
 
-Paginação: 100 registros por página.`,
+Use esta ferramenta ANTES de criar tasks ou apontar horas.
+Retorna: id, nome, status (ativo/inativo).
+
+Paginação client-side: 50 registros por página. Total típico: 600+ workspaces.`,
       inputSchema: ListWorkspacesSchema,
       annotations: {
         readOnlyHint: true,
@@ -145,12 +174,15 @@ Paginação: 100 registros por página.`,
     "ekyte_list_users",
     {
       title: "Listar Usuários do Ekyte",
-      description: `Lista todos os usuários/membros da empresa no Ekyte.
+      description: `Lista usuários/membros da empresa no Ekyte.
 
-Use para descobrir o UUID do usuário antes de criar tasks ou apontar horas.
-Retorna: id (UUID), nome, email, workspace padrão.
+👉 PREFIRA usar "search" (busca por nome OU email, case-insensitive) para achar alguém rapidamente. Ex: search="pietro".
 
-IMPORTANTE: O ID do usuário é um UUID (ex: "feff4a61-b0a3-483d-a384-172c4b301ee0"), não um número.`,
+Retorna: id (UUID), nome, email.
+
+IMPORTANTE: O ID do usuário é um UUID (ex: "feff4a61-b0a3-483d-a384-172c4b301ee0"), não um número.
+
+Paginação client-side: 50 por página.`,
       inputSchema: ListUsersSchema,
       annotations: {
         readOnlyHint: true,
@@ -368,7 +400,12 @@ Retorna: id, nome, sequencial, ativo.`,
       title: "Listar Tarefas do Ekyte",
       description: `Lista tarefas da empresa no Ekyte com filtros opcionais.
 
-Filtros suportados: workspace_id, situation (status), task_type_id, phase_id, datas.
+Filtros server-side: workspace_id, status, task_type_id, phase_id, executor_id, datas.
+Filtro client-side: search (texto no título).
+
+PAGINAÇÃO: a API do Ekyte não pagina este endpoint — o MCP faz paginação client-side (50 por página) após aplicar todos os filtros.
+
+DICA: sempre filtre por workspace_id para reduzir o volume. Use ekyte_list_workspaces com search para achar o ID.
 
 Retorna: id, título, status, responsável, datas, tempo estimado/real, workspace, tipo de tarefa.`,
       inputSchema: ListTasksSchema,
@@ -382,24 +419,31 @@ Retorna: id, título, status, responsável, datas, tempo estimado/real, workspac
     async (params: ListTasksInput) => {
       try {
         const queryParams: Record<string, unknown> = {
-          page: params.page,
+          limit: TASKS_FETCH_LIMIT,
         };
 
         if (params.workspace_id !== undefined) queryParams.workspaceId = params.workspace_id;
-        if (params.project_id !== undefined) queryParams.projectId = params.project_id;
         if (params.status !== undefined) queryParams.situation = params.status;
         if (params.task_type_id !== undefined) queryParams.ctcTaskTypeId = params.task_type_id;
         if (params.phase_id !== undefined) queryParams.phaseId = params.phase_id;
+        if (params.executor_id !== undefined) queryParams.executorId = params.executor_id;
         if (params.created_from) queryParams.createdFrom = params.created_from;
         if (params.created_to) queryParams.createdTo = params.created_to;
         if (params.due_from) queryParams.dueFrom = params.due_from;
         if (params.due_to) queryParams.dueTo = params.due_to;
 
         const data = await apiGet<EkyteTask[]>(companyV2Url("ctc-tasks"), queryParams);
+        const all = Array.isArray(data) ? data : [];
 
-        const tasks = Array.isArray(data) ? data : [];
-        if (tasks.length === 0) {
-          return { content: [{ type: "text" as const, text: "Nenhuma tarefa encontrada com os filtros informados." }] };
+        const filtered = params.search
+          ? all.filter((t) => matchSearch(t.title, params.search!))
+          : all;
+
+        if (filtered.length === 0) {
+          const hint = params.search
+            ? `Nenhuma tarefa encontrada para "${params.search}". Total com filtros server-side: ${all.length}.`
+            : "Nenhuma tarefa encontrada com os filtros informados.";
+          return { content: [{ type: "text" as const, text: hint }] };
         }
 
         const formatMinutes = (mins: number): string => {
@@ -408,10 +452,15 @@ Retorna: id, título, status, responsável, datas, tempo estimado/real, workspac
           return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
         };
 
+        const { slice, total, page, totalPages, hasMore, nextPage } = paginate(filtered, params.page);
+
         const output = {
-          count: tasks.length,
-          page: params.page,
-          items: tasks.map((t) => ({
+          total_fetched: all.length,
+          filtered_total: total,
+          page,
+          total_pages: totalPages,
+          search: params.search ?? null,
+          items: slice.map((t) => ({
             id: t.id,
             title: t.title,
             status: TASK_STATUS_LABELS[t.situation] ?? `Desconhecido (${t.situation})`,
@@ -430,16 +479,17 @@ Retorna: id, título, status, responsável, datas, tempo estimado/real, workspac
             current_due_date: t.currentDueDate?.split("T")[0] ?? "-",
             created_at: t.creationDate?.split("T")[0] ?? "-",
           })),
-          has_more: tasks.length >= 100,
-          next_page: tasks.length >= 100 ? params.page + 1 : null,
+          has_more: hasMore,
+          next_page: nextPage,
         };
 
         const markdown = [
           "# Tarefas do Ekyte",
           "",
-          `Página ${params.page} — ${tasks.length} resultado(s)`,
+          params.search ? `Filtro título: "${params.search}"` : `Total carregado: ${all.length}`,
+          `Página ${page}/${totalPages} — ${slice.length} de ${total} resultado(s)`,
           "",
-          ...tasks.map((t) => [
+          ...slice.map((t) => [
             `## #${t.id} — ${t.title}`,
             `- **Status**: ${TASK_STATUS_LABELS[t.situation] ?? t.situation}`,
             `- **Workspace**: ${t.workspace?.name ?? "-"} (ID: ${t.workspaceId})`,
@@ -449,7 +499,7 @@ Retorna: id, título, status, responsável, datas, tempo estimado/real, workspac
             `- **Entrega**: ${t.currentDueDate?.split("T")[0] ?? "-"}`,
             "",
           ]).flat(),
-          output.has_more ? `➡️ Mais resultados na página ${output.next_page}` : "✅ Fim dos resultados.",
+          hasMore ? `➡️ Mais resultados na página ${nextPage}` : "✅ Fim dos resultados.",
         ].join("\n");
 
         return {

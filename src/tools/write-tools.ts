@@ -64,9 +64,31 @@ function formatDuration(minutes: number): string {
 }
 
 function formatResponse(data: unknown, markdown: string, format: ResponseFormat) {
-  const textContent = format === ResponseFormat.MARKDOWN
-    ? markdown
-    : JSON.stringify(data, null, 2);
+  if (format === ResponseFormat.JSON) {
+    const json = JSON.stringify(data, null, 2);
+    if (json.length <= CHARACTER_LIMIT) return json;
+    const d = data as { items?: unknown[] } & Record<string, unknown>;
+    if (Array.isArray(d?.items) && d.items.length > 1) {
+      const reduced: Record<string, unknown> = { ...d };
+      let keep = Math.max(1, Math.floor(d.items.length / 2));
+      while (keep > 0) {
+        reduced.items = d.items.slice(0, keep);
+        reduced.truncated = true;
+        reduced.truncated_kept = keep;
+        reduced.truncated_total_in_page = d.items.length;
+        reduced.hint = "Resposta encurtada para caber no limite. Reduza o período ou aplique mais filtros.";
+        const out = JSON.stringify(reduced, null, 2);
+        if (out.length <= CHARACTER_LIMIT) return out;
+        keep = Math.floor(keep / 2);
+      }
+    }
+    const fallback = {
+      error: "response_too_large",
+      message: "JSON excede o limite. Reduza o período ou aplique mais filtros.",
+    };
+    return JSON.stringify(fallback, null, 2);
+  }
+  const textContent = markdown;
   if (textContent.length > CHARACTER_LIMIT) {
     return textContent.substring(0, CHARACTER_LIMIT) +
       "\n\n⚠️ Resposta truncada. Use filtros ou paginação para reduzir o volume de dados.";
@@ -114,6 +136,22 @@ O esforço (duração) é calculado automaticamente.`,
         const effort = calculateEffortMinutes(params.start_time, params.end_time);
         const duration = formatDuration(effort);
 
+        // Ekyte requires the current phase of the task alongside ctcTaskId —
+        // otherwise it returns 400 "Etapa não encontrada na tarefa".
+        const task = await apiGet<Record<string, unknown>>(
+          companyV2Url(`ctc-tasks/${params.task_id}`)
+        );
+        const phaseId = task?.phaseId;
+        const ctcTaskTypeId = task?.ctcTaskTypeId;
+        if (!phaseId || !ctcTaskTypeId) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Erro: não foi possível obter phase/task_type da task #${params.task_id}. Verifique o ID.`,
+            }],
+          };
+        }
+
         const payload = {
           typeTimeTracking: 2,
           startDate: `${params.date}T${params.start_time}:00`,
@@ -127,6 +165,10 @@ O esforço (duração) é calculado automaticamente.`,
           type: 1,
           ctcTaskId: params.task_id,
           ctcTask: { id: params.task_id },
+          ctcTaskTypeId,
+          ctcTaskType: { id: ctcTaskTypeId },
+          phaseId,
+          phase: { id: phaseId },
           manualTime: params.manual_time ?? params.start_time,
         };
 
@@ -235,18 +277,19 @@ IMPORTANTE: Sempre confirme os dados com o usuário antes de executar.`,
     "ekyte_list_time_entries",
     {
       title: "Listar Apontamentos de Horas",
-      description: `Lista apontamentos de horas no Ekyte com filtros por data, usuário e workspace.
+      description: `Lista apontamentos de horas no Ekyte para um workspace em um período.
 
 Parâmetros obrigatórios:
-- workspace_id: ID do workspace
-
-Filtros opcionais:
+- workspace_id: ID do workspace (use ekyte_list_workspaces para descobrir)
 - date_from / date_to: Período de datas (AAAA-MM-DD)
-- user_id: UUID do usuário para filtrar
 
-Retorna: detalhes dos apontamentos incluindo data, horário, duração, tarefa vinculada, etc.
+Filtros client-side opcionais:
+- user_id: UUID do usuário
+- task_id: ID da tarefa
 
-Use esta ferramenta para consultar apontamentos existentes antes de criar ou deletar.`,
+PAGINAÇÃO: client-side (50 por página). O MCP puxa todos os apontamentos do período e filtra depois.
+
+Retorna: id, data, horário, duração, tarefa, usuário, comentário.`,
       inputSchema: ListTimeEntriesSchema,
       annotations: {
         readOnlyHint: true,
@@ -259,70 +302,94 @@ Use esta ferramenta para consultar apontamentos existentes antes de criar ou del
       try {
         const queryParams: Record<string, unknown> = {
           workspaceId: params.workspace_id,
+          startDate: params.date_from,
+          endDate: params.date_to,
+          preset: 50,
           tabId: 10,
           phaseTimeTracking: 10,
-          preset: 50,
         };
 
-        if (params.date_from) queryParams.startDate = params.date_from;
-        if (params.date_to) queryParams.endDate = params.date_to;
-        if (params.user_id) queryParams.executorId = params.user_id;
-
         const data = await apiGet<unknown>(
-          companyUrl("time-trackings/data/details"),
+          companyUrl("time-trackings/report"),
           queryParams
         );
 
-        const entries = Array.isArray(data) ? data : [];
+        const all = Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
 
-        if (entries.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "Nenhum apontamento encontrado com os filtros informados. Tente ajustar as datas ou o workspace_id." }],
-          };
+        let filtered = all;
+        if (params.user_id) {
+          filtered = filtered.filter((e) => e.executorId === params.user_id);
+        }
+        if (params.task_id !== undefined) {
+          filtered = filtered.filter((e) => e.ctcTaskId === params.task_id);
         }
 
+        if (filtered.length === 0) {
+          const msg = all.length === 0
+            ? "Nenhum apontamento encontrado no período informado. Tente ajustar as datas ou o workspace_id."
+            : `Nenhum apontamento no período após aplicar filtros. Total no período: ${all.length}.`;
+          return { content: [{ type: "text" as const, text: msg }] };
+        }
+
+        const total = filtered.length;
+        const totalPages = Math.max(1, Math.ceil(total / 50));
+        const safePage = Math.min(Math.max(1, params.page), totalPages);
+        const start = (safePage - 1) * 50;
+        const slice = filtered.slice(start, start + 50);
+        const hasMore = safePage < totalPages;
+        const nextPage = hasMore ? safePage + 1 : null;
+
         const output = {
-          count: entries.length,
+          total_in_period: all.length,
+          filtered_total: total,
+          page: safePage,
+          total_pages: totalPages,
           workspace_id: params.workspace_id,
           filters: {
-            date_from: params.date_from ?? null,
-            date_to: params.date_to ?? null,
+            date_from: params.date_from,
+            date_to: params.date_to,
             user_id: params.user_id ?? null,
+            task_id: params.task_id ?? null,
           },
-          items: entries.map((e: Record<string, unknown>) => ({
-            id: e.id ?? e.timeTrackingId,
-            date: e.startDate ?? e.date,
-            start_time: e.startDateTime,
-            end_time: e.endDateTime,
+          items: slice.map((e) => ({
+            id: e.id,
+            date: typeof e.startDate === "string" ? e.startDate.split("T")[0] : e.startDate,
+            start_time: typeof e.startDate === "string" ? e.startDate.split("T")[1]?.substring(0, 5) : null,
+            end_time: typeof e.endDate === "string" ? e.endDate.split("T")[1]?.substring(0, 5) : null,
             effort_minutes: e.effort,
             comment: e.comment ?? "",
             task_id: e.ctcTaskId,
-            task_title: (e.ctcTask as Record<string, unknown>)?.title ?? e.taskTitle ?? "-",
-            user_name: (e.executor as Record<string, unknown>)?.userName ?? e.userName ?? "-",
+            task_title: (e.ctcTask as Record<string, unknown> | null)?.title ?? "-",
+            user_id: e.executorId,
+            user_name: (e.executor as Record<string, unknown> | null)?.userName ?? "-",
             workspace_id: e.workspaceId,
           })),
+          has_more: hasMore,
+          next_page: nextPage,
         };
 
         const markdown = [
           "# Apontamentos de Horas",
           "",
-          `Workspace: ${params.workspace_id} | ${entries.length} resultado(s)`,
-          params.date_from ? `De: ${params.date_from}` : "",
-          params.date_to ? `Até: ${params.date_to}` : "",
+          `Workspace: ${params.workspace_id} | Período: ${params.date_from} → ${params.date_to}`,
+          `Página ${safePage}/${totalPages} — ${slice.length} de ${total} (total no período: ${all.length})`,
           "",
-          ...entries.map((e: Record<string, unknown>) => {
-            const taskTitle = (e.ctcTask as Record<string, unknown>)?.title ?? e.taskTitle ?? "Sem tarefa";
-            const userName = (e.executor as Record<string, unknown>)?.userName ?? e.userName ?? "-";
+          ...slice.map((e) => {
+            const taskTitle = (e.ctcTask as Record<string, unknown> | null)?.title ?? "Sem tarefa";
+            const userName = (e.executor as Record<string, unknown> | null)?.userName ?? "-";
+            const startDate = typeof e.startDate === "string" ? e.startDate : "";
+            const endDate = typeof e.endDate === "string" ? e.endDate : "";
             return [
-              `### ID ${e.id ?? e.timeTrackingId} — ${taskTitle}`,
+              `### ID ${e.id} — ${taskTitle}`,
               `- **Usuário**: ${userName}`,
-              `- **Data**: ${e.startDate ?? e.date}`,
-              `- **Horário**: ${e.startDateTime ?? "-"} → ${e.endDateTime ?? "-"}`,
+              `- **Data**: ${startDate.split("T")[0] ?? "-"}`,
+              `- **Horário**: ${startDate.split("T")[1]?.substring(0, 5) ?? "-"} → ${endDate.split("T")[1]?.substring(0, 5) ?? "-"}`,
               `- **Duração**: ${e.effort ? formatDuration(e.effort as number) : "-"} (${e.effort ?? 0} min)`,
               e.comment ? `- **Comentário**: ${e.comment}` : "",
               "",
             ].filter(Boolean).join("\n");
           }),
+          hasMore ? `➡️ Mais resultados na página ${nextPage}` : "✅ Fim dos resultados.",
         ].filter(Boolean).join("\n");
 
         return {
