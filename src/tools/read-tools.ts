@@ -2,11 +2,11 @@
  * Read-only tools for Ekyte MCP Server
  *
  * These tools only fetch data and never modify anything in Ekyte.
- * All requests use the unified Bearer Token authentication.
+ * All endpoints live under the internal API: /api/companies/{companyId}/...
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { apiGet, handleApiError } from "../services/ekyte-client.js";
+import { apiGet, companyUrl, companyV2Url, handleApiError } from "../services/ekyte-client.js";
 import { TASK_STATUS_LABELS, CHARACTER_LIMIT } from "../constants.js";
 import { ResponseFormat } from "../schemas/common.js";
 import {
@@ -15,11 +15,13 @@ import {
   ListTaskTypesSchema,
   ListTasksSchema,
   GetTaskSchema,
+  ListPhasesSchema,
   type ListWorkspacesInput,
   type ListUsersInput,
   type ListTaskTypesInput,
   type ListTasksInput,
   type GetTaskInput,
+  type ListPhasesInput,
 } from "../schemas/task.js";
 import type { EkyteWorkspace, EkyteUser, EkyteTaskType, EkyteTask } from "../types.js";
 
@@ -29,8 +31,6 @@ function formatResponse(data: unknown, markdown: string, format: ResponseFormat)
   const textContent = format === ResponseFormat.MARKDOWN
     ? markdown
     : JSON.stringify(data, null, 2);
-
-  // Truncate if too large
   if (textContent.length > CHARACTER_LIMIT) {
     return textContent.substring(0, CHARACTER_LIMIT) +
       "\n\n⚠️ Resposta truncada. Use filtros ou paginação para reduzir o volume de dados.";
@@ -47,14 +47,12 @@ export function registerReadTools(server: McpServer): void {
     "ekyte_list_workspaces",
     {
       title: "Listar Workspaces do Ekyte",
-      description: `Lista todos os workspaces disponíveis na empresa do Ekyte.
+      description: `Lista todos os workspaces (clientes/projetos) da empresa no Ekyte.
 
-Use esta ferramenta PRIMEIRO para descobrir o ID do workspace antes de criar tasks ou apontar horas.
-Retorna: id, nome, status (ativo/inativo).
+Use PRIMEIRO para descobrir o workspace_id antes de criar tasks ou apontar horas.
+Retorna: id, nome, status (ativo/inativo), idioma padrão.
 
-Paginação: 100 registros por página.
-
-IMPORTANTE: Sempre use esta ferramenta antes de qualquer operação que exija workspace_id.`,
+Paginação: 100 registros por página.`,
       inputSchema: ListWorkspacesSchema,
       annotations: {
         readOnlyHint: true,
@@ -65,16 +63,13 @@ IMPORTANTE: Sempre use esta ferramenta antes de qualquer operação que exija wo
     },
     async (params: ListWorkspacesInput) => {
       try {
-        const data = await apiGet<EkyteWorkspace[]>("/v1.0/workspaces", {
+        const data = await apiGet<EkyteWorkspace[]>(companyUrl("workspaces"), {
           page: params.page,
         });
 
         const workspaces = Array.isArray(data) ? data : [];
-
         if (workspaces.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "Nenhum workspace encontrado nesta página." }],
-          };
+          return { content: [{ type: "text" as const, text: "Nenhum workspace encontrado nesta página." }] };
         }
 
         const output = {
@@ -107,9 +102,7 @@ IMPORTANTE: Sempre use esta ferramenta antes de qualquer operação que exija wo
           content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text" as const, text: handleApiError(error) }],
-        };
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
     }
   );
@@ -121,10 +114,8 @@ IMPORTANTE: Sempre use esta ferramenta antes de qualquer operação que exija wo
       title: "Listar Usuários do Ekyte",
       description: `Lista todos os usuários/membros da empresa no Ekyte.
 
-Use esta ferramenta para descobrir o ID (UUID) do usuário antes de criar tasks ou apontar horas.
-Retorna: id (UUID), nome, email.
-
-Paginação: 500 registros por página.
+Use para descobrir o UUID do usuário antes de criar tasks ou apontar horas.
+Retorna: id (UUID), nome, email, workspace padrão.
 
 IMPORTANTE: O ID do usuário é um UUID (ex: "feff4a61-b0a3-483d-a384-172c4b301ee0"), não um número.`,
       inputSchema: ListUsersSchema,
@@ -137,16 +128,13 @@ IMPORTANTE: O ID do usuário é um UUID (ex: "feff4a61-b0a3-483d-a384-172c4b301e
     },
     async (params: ListUsersInput) => {
       try {
-        const data = await apiGet<EkyteUser[]>("/v1.0/users", {
+        const data = await apiGet<EkyteUser[]>(companyUrl("users"), {
           page: params.page,
         });
 
         const users = Array.isArray(data) ? data : [];
-
         if (users.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "Nenhum usuário encontrado nesta página." }],
-          };
+          return { content: [{ type: "text" as const, text: "Nenhum usuário encontrado nesta página." }] };
         }
 
         const output = {
@@ -157,8 +145,8 @@ IMPORTANTE: O ID do usuário é um UUID (ex: "feff4a61-b0a3-483d-a384-172c4b301e
             name: u.userName,
             email: u.email,
           })),
-          has_more: users.length >= 500,
-          next_page: users.length >= 500 ? params.page + 1 : null,
+          has_more: users.length >= 100,
+          next_page: users.length >= 100 ? params.page + 1 : null,
         };
 
         const markdown = [
@@ -166,8 +154,8 @@ IMPORTANTE: O ID do usuário é um UUID (ex: "feff4a61-b0a3-483d-a384-172c4b301e
           "",
           `Página ${params.page} — ${users.length} resultado(s)`,
           "",
-          "| ID | Nome | Email |",
-          "|----|------|-------|",
+          "| ID (UUID) | Nome | Email |",
+          "|-----------|------|-------|",
           ...users.map((u) =>
             `| ${u.id} | ${u.userName} | ${u.email} |`
           ),
@@ -179,9 +167,7 @@ IMPORTANTE: O ID do usuário é um UUID (ex: "feff4a61-b0a3-483d-a384-172c4b301e
           content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text" as const, text: handleApiError(error) }],
-        };
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
     }
   );
@@ -191,12 +177,12 @@ IMPORTANTE: O ID do usuário é um UUID (ex: "feff4a61-b0a3-483d-a384-172c4b301e
     "ekyte_list_task_types",
     {
       title: "Listar Tipos de Tarefa do Ekyte",
-      description: `Lista todos os tipos de tarefa disponíveis na empresa no Ekyte.
+      description: `Lista todos os tipos de tarefa (templates) da empresa.
 
-Use esta ferramenta para descobrir o ID do tipo de tarefa antes de criar tasks ou apontar horas sem task.
-Retorna: id, nome, esforço estimado, workflow associado.
+Use para descobrir o task_type_id antes de criar tarefas.
+Retorna: id, nome, workflow_id (importante: cada task-type pertence a um workflow, e as phases vivem no workflow).
 
-Paginação: 100 registros por página.`,
+DICA: Depois de achar o task_type, use ekyte_list_phases com o workflow_id correspondente para descobrir as phases disponíveis.`,
       inputSchema: ListTaskTypesSchema,
       annotations: {
         readOnlyHint: true,
@@ -207,16 +193,13 @@ Paginação: 100 registros por página.`,
     },
     async (params: ListTaskTypesInput) => {
       try {
-        const data = await apiGet<EkyteTaskType[]>("/v1.0/task-types", {
+        const data = await apiGet<EkyteTaskType[]>(companyUrl("task-types"), {
           page: params.page,
         });
 
         const types = Array.isArray(data) ? data : [];
-
         if (types.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "Nenhum tipo de tarefa encontrado nesta página." }],
-          };
+          return { content: [{ type: "text" as const, text: "Nenhum tipo de tarefa encontrado nesta página." }] };
         }
 
         const output = {
@@ -226,10 +209,9 @@ Paginação: 100 registros por página.`,
             id: t.id,
             name: t.name,
             active: t.active === 1,
-            effort: t.effortFormated,
             workflow_id: t.workflowId,
-            workflow_name: t.workflow?.name,
             group: t.ctcTaskTypeGroup?.name,
+            allocation_type: t.allocationType,
           })),
           has_more: types.length >= 100,
           next_page: types.length >= 100 ? params.page + 1 : null,
@@ -240,10 +222,10 @@ Paginação: 100 registros por página.`,
           "",
           `Página ${params.page} — ${types.length} resultado(s)`,
           "",
-          "| ID | Nome | Ativo | Esforço | Workflow | Grupo |",
-          "|----|------|-------|---------|----------|-------|",
+          "| ID | Nome | Ativo | Workflow ID | Grupo |",
+          "|----|------|-------|-------------|-------|",
           ...types.map((t) =>
-            `| ${t.id} | ${t.name} | ${t.active === 1 ? "Sim" : "Não"} | ${t.effortFormated} | ${t.workflow?.name ?? "-"} | ${t.ctcTaskTypeGroup?.name ?? "-"} |`
+            `| ${t.id} | ${t.name} | ${t.active === 1 ? "Sim" : "Não"} | ${t.workflowId} | ${t.ctcTaskTypeGroup?.name ?? "-"} |`
           ),
           "",
           output.has_more ? `➡️ Mais resultados na página ${output.next_page}` : "✅ Fim dos resultados.",
@@ -253,9 +235,72 @@ Paginação: 100 registros por página.`,
           content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text" as const, text: handleApiError(error) }],
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
+      }
+    }
+  );
+
+  // -------- List Workflow Phases --------
+  server.registerTool(
+    "ekyte_list_phases",
+    {
+      title: "Listar Fases (Phases) de um Workflow",
+      description: `Lista as fases (phases) de um workflow do Ekyte.
+
+Cada tipo de tarefa pertence a um workflow, e o workflow contém as fases possíveis para tarefas daquele tipo.
+
+Use esta ferramenta ANTES de criar uma tarefa: descubra o workflow_id via ekyte_list_task_types, depois use este tool para achar o phase_id correto (normalmente a fase inicial).
+
+Retorna: id, nome, sequencial, ativo.`,
+      inputSchema: ListPhasesSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (params: ListPhasesInput) => {
+      try {
+        const data = await apiGet<Record<string, unknown>>(
+          companyUrl(`workflows/${params.workflow_id}`)
+        );
+
+        const phases = Array.isArray(data.phases) ? data.phases as Record<string, unknown>[] : [];
+        if (phases.length === 0) {
+          return { content: [{ type: "text" as const, text: `Nenhuma fase encontrada para workflow ${params.workflow_id}.` }] };
+        }
+
+        const output = {
+          workflow_id: params.workflow_id,
+          workflow_name: data.name ?? "-",
+          count: phases.length,
+          items: phases.map((p) => ({
+            id: p.id,
+            name: p.name,
+            sequential: p.sequential,
+            active: p.active === 1,
+            hidden: p.hidden === 1,
+          })),
         };
+
+        const markdown = [
+          `# Fases do Workflow #${params.workflow_id} — ${data.name ?? "-"}`,
+          "",
+          `${phases.length} fase(s) encontrada(s)`,
+          "",
+          "| ID | Seq | Nome | Ativa |",
+          "|----|-----|------|-------|",
+          ...phases.map((p) =>
+            `| ${p.id} | ${p.sequential} | ${p.name} | ${p.active === 1 ? "Sim" : "Não"} |`
+          ),
+        ].join("\n");
+
+        return {
+          content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }],
+        };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
     }
   );
@@ -265,15 +310,11 @@ Paginação: 100 registros por página.`,
     "ekyte_list_tasks",
     {
       title: "Listar Tarefas do Ekyte",
-      description: `Lista tarefas da empresa no Ekyte com diversos filtros disponíveis.
+      description: `Lista tarefas da empresa no Ekyte com filtros opcionais.
 
-Filtros: workspace, projeto, status (10=Ativa, 20=Pausada, 30=Concluída, 40=Cancelada), tipo de tarefa, etapa, squad, datas de criação/entrega/conclusão.
+Filtros suportados: workspace_id, situation (status), task_type_id, phase_id, datas.
 
-Retorna: id, título, status, responsável, datas, tempo estimado/real, workspace, tipo de tarefa.
-
-DICA: Para encontrar uma task específica, combine filtros. Por exemplo: workspace_id + status=10 para tasks ativas de um workspace.
-
-Paginação: resultados paginados por página.`,
+Retorna: id, título, status, responsável, datas, tempo estimado/real, workspace, tipo de tarefa.`,
       inputSchema: ListTasksSchema,
       annotations: {
         readOnlyHint: true,
@@ -284,37 +325,25 @@ Paginação: resultados paginados por página.`,
     },
     async (params: ListTasksInput) => {
       try {
-        // Build query params mapping snake_case to Ekyte's camelCase
         const queryParams: Record<string, unknown> = {
           page: params.page,
         };
 
         if (params.workspace_id !== undefined) queryParams.workspaceId = params.workspace_id;
         if (params.project_id !== undefined) queryParams.projectId = params.project_id;
-        if (params.status !== undefined) queryParams.status = params.status;
-        if (params.task_type_id !== undefined) queryParams.taskTypeId = params.task_type_id;
+        if (params.status !== undefined) queryParams.situation = params.status;
+        if (params.task_type_id !== undefined) queryParams.ctcTaskTypeId = params.task_type_id;
         if (params.phase_id !== undefined) queryParams.phaseId = params.phase_id;
-        if (params.squad_id !== undefined) queryParams.SquadId = params.squad_id;
         if (params.created_from) queryParams.createdFrom = params.created_from;
         if (params.created_to) queryParams.createdTo = params.created_to;
         if (params.due_from) queryParams.dueFrom = params.due_from;
         if (params.due_to) queryParams.dueTo = params.due_to;
-        if (params.phase_date_from) queryParams.phaseDateFrom = params.phase_date_from;
-        if (params.phase_date_to) queryParams.phaseDateTo = params.phase_date_to;
-        if (params.resolved_date_from) queryParams.resolvedDateFrom = params.resolved_date_from;
-        if (params.resolved_date_to) queryParams.resolvedDateTo = params.resolved_date_to;
-        if (params.include_checklist) queryParams.includeChecklist = 1;
-        if (params.include_phases) queryParams.includePhases = 1;
-        if (params.include_comments) queryParams.includeComments = 1;
 
-        const data = await apiGet<EkyteTask[]>("/v1.2/tasks", queryParams);
+        const data = await apiGet<EkyteTask[]>(companyV2Url("ctc-tasks"), queryParams);
 
         const tasks = Array.isArray(data) ? data : [];
-
         if (tasks.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "Nenhuma tarefa encontrada com os filtros informados. Tente ajustar os filtros ou verificar se o workspace_id está correto usando ekyte_list_workspaces." }],
-          };
+          return { content: [{ type: "text" as const, text: "Nenhuma tarefa encontrada com os filtros informados." }] };
         }
 
         const formatMinutes = (mins: number): string => {
@@ -335,7 +364,6 @@ Paginação: resultados paginados por página.`,
             workspace_id: t.workspaceId,
             task_type: t.ctcTaskType?.name ?? "-",
             task_type_id: t.ctcTaskTypeId,
-            phase: (t.phase as unknown as unknown as Record<string, unknown>)?.name ?? "-",
             phase_id: t.phaseId,
             executor: t.executor?.userName ?? "-",
             executor_id: t.executorId,
@@ -360,7 +388,6 @@ Paginação: resultados paginados por página.`,
             `- **Status**: ${TASK_STATUS_LABELS[t.situation] ?? t.situation}`,
             `- **Workspace**: ${t.workspace?.name ?? "-"} (ID: ${t.workspaceId})`,
             `- **Tipo**: ${t.ctcTaskType?.name ?? "-"}`,
-            `- **Etapa**: ${(t.phase as unknown as Record<string, unknown>)?.name ?? "-"}`,
             `- **Responsável**: ${t.executor?.userName ?? "-"}`,
             `- **Tempo**: Estimado ${formatMinutes(t.estimatedTime ?? 0)} | Real ${formatMinutes(t.actualTime ?? 0)}`,
             `- **Entrega**: ${t.currentDueDate?.split("T")[0] ?? "-"}`,
@@ -373,9 +400,7 @@ Paginação: resultados paginados por página.`,
           content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text" as const, text: handleApiError(error) }],
-        };
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
     }
   );
@@ -387,11 +412,9 @@ Paginação: resultados paginados por página.`,
       title: "Ver Detalhes de uma Tarefa",
       description: `Busca os detalhes completos de uma tarefa específica pelo ID.
 
-Use ekyte_list_tasks primeiro para encontrar o ID da tarefa.
+Use ekyte_list_tasks primeiro para encontrar o ID.
 
-Retorna todos os campos disponíveis: título, descrição, status, responsável, datas, checklists, etapas, comentários.
-
-NOTA: Esta ferramenta busca a tarefa pelo ID na API pública. Se a tarefa não for encontrada, ela pode ter um status diferente do filtro padrão.`,
+Retorna: título, descrição, status, responsável, workspace, tipo, datas, tempos.`,
       inputSchema: GetTaskSchema,
       annotations: {
         readOnlyHint: true,
@@ -402,24 +425,15 @@ NOTA: Esta ferramenta busca a tarefa pelo ID na API pública. Se a tarefa não f
     },
     async (params: GetTaskInput) => {
       try {
-        // Use list endpoint with no status filter to find task by ID across all statuses
-        const queryParams: Record<string, unknown> = {
-          page: 1,
-          status: 0, // All statuses
-        };
-        if (params.include_checklist) queryParams.includeChecklist = 1;
-        if (params.include_phases) queryParams.includePhases = 1;
-        if (params.include_comments) queryParams.includeComments = 1;
+        const task = await apiGet<EkyteTask>(
+          companyV2Url(`ctc-tasks/${params.task_id}`)
+        );
 
-        const data = await apiGet<EkyteTask[]>("/v1.2/tasks", queryParams);
-        const tasks = Array.isArray(data) ? data : [];
-        const task = tasks.find((t) => t.id === params.task_id);
-
-        if (!task) {
+        if (!task || !task.id) {
           return {
             content: [{
               type: "text" as const,
-              text: `Tarefa com ID ${params.task_id} não encontrada. Verifique se o ID está correto usando ekyte_list_tasks.`,
+              text: `Tarefa com ID ${params.task_id} não encontrada.`,
             }],
           };
         }
@@ -440,7 +454,6 @@ NOTA: Esta ferramenta busca a tarefa pelo ID na API pública. Se a tarefa não f
           workspace_id: task.workspaceId,
           task_type: task.ctcTaskType?.name,
           task_type_id: task.ctcTaskTypeId,
-          phase: (task.phase as unknown as Record<string, unknown>)?.name,
           phase_id: task.phaseId,
           executor: task.executor?.userName,
           executor_id: task.executorId,
@@ -453,21 +466,19 @@ NOTA: Esta ferramenta busca a tarefa pelo ID na API pública. Se a tarefa não f
           resolved_at: task.resolvedDate?.split("T")[0] ?? null,
           created_by: task.createBy?.userName,
           priority: task.priority,
-          tags: task.tags,
         };
 
         const markdown = [
           `# Tarefa #${task.id} — ${task.title}`,
           "",
-          task.description ? `> ${task.description}` : "",
+          task.description ? `> ${task.description.replace(/<[^>]+>/g, "")}` : "",
           "",
           `- **Status**: ${output.status}`,
           `- **Workspace**: ${output.workspace} (ID: ${output.workspace_id})`,
-          `- **Tipo**: ${output.task_type}`,
-          `- **Etapa**: ${output.phase}`,
+          `- **Tipo**: ${output.task_type} (ID: ${output.task_type_id})`,
+          `- **Phase ID**: ${output.phase_id}`,
           `- **Responsável**: ${output.executor}`,
-          `- **Criado por**: ${output.created_by}`,
-          `- **Prioridade**: ${output.priority}`,
+          `- **Criado por**: ${output.created_by ?? "-"}`,
           "",
           "### Datas",
           `- Início etapa: ${output.phase_start_date}`,
@@ -485,9 +496,7 @@ NOTA: Esta ferramenta busca a tarefa pelo ID na API pública. Se a tarefa não f
           content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }],
         };
       } catch (error) {
-        return {
-          content: [{ type: "text" as const, text: handleApiError(error) }],
-        };
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
     }
   );

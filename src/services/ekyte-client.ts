@@ -1,14 +1,13 @@
 /**
  * Ekyte API Client — Unified Authentication
  *
- * Uses a single Bearer Token (master token) for ALL requests.
- * The token is sent via Authorization header on every endpoint.
+ * Uses a single Bearer Token (JWT) for ALL requests.
+ * All endpoints used by this server live under the INTERNAL API:
+ *   https://api.ekyte.com/api/...
+ *   https://api.ekyte.com/api/v2/...
  *
- * Ekyte has two API "families" but both accept the same Bearer token:
- * - Public API: /v1.0/*, /v1.1/*, /v1.2/* (GET endpoints for reading data)
- * - Internal API: /api/* and /api/v2/* (POST/PATCH endpoints for writing data)
- *
- * Both share the same base URL: https://api.ekyte.com
+ * The legacy PUBLIC API (/v1.0/*, /v1.2/*) expects a separate x-api-key and is
+ * NOT used here — the JWT Bearer does not authenticate against it.
  */
 
 import axios, { AxiosError, AxiosInstance } from "axios";
@@ -23,7 +22,7 @@ function getConfig() {
   if (!bearerToken) {
     throw new Error(
       "EKYTE_BEARER_TOKEN não definido. " +
-      "Configure o Bearer Token master do Ekyte como variável de ambiente."
+      "Configure o Bearer Token (JWT) do Ekyte como variável de ambiente."
     );
   }
   if (!companyId) {
@@ -93,9 +92,24 @@ export function handleApiError(error: unknown): string {
   return `Erro inesperado: ${error instanceof Error ? error.message : String(error)}`;
 }
 
+// ============ URL Helpers ============
+
+/** Builds a company-scoped internal API URL:  /api/companies/{companyId}/{suffix} */
+export function companyUrl(suffix: string): string {
+  const { companyId } = getConfig();
+  const clean = suffix.replace(/^\/+/, "");
+  return `/api/companies/${companyId}/${clean}`;
+}
+
+/** Builds a v2 company-scoped internal API URL: /api/v2/companies/{companyId}/{suffix} */
+export function companyV2Url(suffix: string): string {
+  const { companyId } = getConfig();
+  const clean = suffix.replace(/^\/+/, "");
+  return `/api/v2/companies/${companyId}/${clean}`;
+}
+
 // ============ Unified API Methods ============
 
-/** GET request — works for both public (/v1.x/) and internal (/api/) endpoints */
 export async function apiGet<T>(
   endpoint: string,
   params: Record<string, unknown> = {}
@@ -104,7 +118,6 @@ export async function apiGet<T>(
   return response.data;
 }
 
-/** POST request */
 export async function apiPost<T>(
   endpoint: string,
   data: unknown
@@ -113,7 +126,6 @@ export async function apiPost<T>(
   return response.data;
 }
 
-/** PUT request */
 export async function apiPut<T>(
   endpoint: string,
   data: unknown
@@ -122,7 +134,7 @@ export async function apiPut<T>(
   return response.data;
 }
 
-/** PATCH request (JSON Patch format used by Ekyte for updates) */
+/** PATCH (JSON Patch format used by Ekyte for updates) */
 export async function apiPatch<T>(
   endpoint: string,
   data: unknown,
@@ -132,7 +144,6 @@ export async function apiPatch<T>(
   return response.data;
 }
 
-/** DELETE request */
 export async function apiDelete<T>(
   endpoint: string
 ): Promise<T> {

@@ -13,8 +13,9 @@ import {
   apiPost,
   apiPatch,
   apiGet,
+  companyUrl,
+  companyV2Url,
   handleApiError,
-  getCompanyId,
 } from "../services/ekyte-client.js";
 import { ResponseFormat } from "../schemas/common.js";
 import {
@@ -110,7 +111,6 @@ O esforço (duração) é calculado automaticamente.`,
     },
     async (params: CreateTimeEntryWithTaskInput) => {
       try {
-        const companyId = getCompanyId();
         const effort = calculateEffortMinutes(params.start_time, params.end_time);
         const duration = formatDuration(effort);
 
@@ -131,7 +131,7 @@ O esforço (duração) é calculado automaticamente.`,
         };
 
         await apiPost(
-          `companies/${companyId}/workspaces/${params.workspace_id}/time-trackings`,
+          companyUrl(`workspaces/${params.workspace_id}/time-trackings`),
           payload
         );
 
@@ -182,7 +182,6 @@ IMPORTANTE: Sempre confirme os dados com o usuário antes de executar.`,
     },
     async (params: CreateTimeEntryWithoutTaskInput) => {
       try {
-        const companyId = getCompanyId();
         const effort = calculateEffortMinutes(params.start_time, params.end_time);
         const duration = formatDuration(effort);
 
@@ -204,7 +203,7 @@ IMPORTANTE: Sempre confirme os dados com o usuário antes de executar.`,
         };
 
         await apiPost(
-          `companies/${companyId}/workspaces/${params.workspace_id}/time-trackings`,
+          companyUrl(`workspaces/${params.workspace_id}/time-trackings`),
           payload
         );
 
@@ -258,8 +257,6 @@ Use esta ferramenta para consultar apontamentos existentes antes de criar ou del
     },
     async (params: ListTimeEntriesInput) => {
       try {
-        const companyId = getCompanyId();
-
         const queryParams: Record<string, unknown> = {
           workspaceId: params.workspace_id,
           tabId: 10,
@@ -272,7 +269,7 @@ Use esta ferramenta para consultar apontamentos existentes antes de criar ou del
         if (params.user_id) queryParams.executorId = params.user_id;
 
         const data = await apiGet<unknown>(
-          `companies/${companyId}/time-trackings/data/details`,
+          companyUrl("time-trackings/data/details"),
           queryParams
         );
 
@@ -360,15 +357,12 @@ Use ekyte_list_time_entries para verificar o apontamento correto antes de deleta
     },
     async (params: DeleteTimeEntryInput) => {
       try {
-        const companyId = getCompanyId();
-
-        // Ekyte uses JSON Patch to soft-delete (status=30)
         const patchPayload = [
           { op: "replace", path: "/status", value: 30 },
         ];
 
         await apiPatch(
-          `companies/${companyId}/workspaces/${params.workspace_id}/time-trackings/${params.time_entry_id}`,
+          companyUrl(`workspaces/${params.workspace_id}/time-trackings/${params.time_entry_id}`),
           patchPayload
         );
 
@@ -419,7 +413,6 @@ Erros aqui impactam diretamente o controle de performance da empresa.`,
     },
     async (params: CreateTaskInput) => {
       try {
-        const companyId = getCompanyId();
         const estimatedHours = Math.floor(params.estimated_time_minutes / 60);
         const estimatedMins = params.estimated_time_minutes % 60;
         const timeFormatted = `${estimatedHours.toString().padStart(2, "0")}:${estimatedMins.toString().padStart(2, "0")}`;
@@ -473,12 +466,14 @@ Erros aqui impactam diretamente o controle de performance da empresa.`,
           typeDuplicateForms: null,
         };
 
-        const result = await apiPost<Record<string, unknown>>(
-          `companies/${companyId}/ctc-tasks`,
+        const result = await apiPost<Record<string, unknown> | number>(
+          companyUrl("ctc-tasks"),
           payload
         );
 
-        const taskId = result?.id ?? "desconhecido";
+        const taskId = typeof result === "number"
+          ? result
+          : (result as Record<string, unknown>)?.id ?? "desconhecido";
 
         return {
           content: [{ type: "text" as const, text: [
@@ -530,8 +525,6 @@ IMPORTANTE: Sempre confirme as alterações com o usuário antes de executar.`,
     },
     async (params: UpdateTaskInput) => {
       try {
-        const companyId = getCompanyId();
-
         // Build JSON Patch operations array
         const patchOps: Array<{ op: string; path: string; value: unknown }> = [];
 
@@ -559,7 +552,7 @@ IMPORTANTE: Sempre confirme as alterações com o usuário antes de executar.`,
         }
 
         await apiPatch(
-          `v2/companies/${companyId}/ctc-tasks/${params.task_id}`,
+          companyV2Url(`ctc-tasks/${params.task_id}`),
           patchOps,
           { type: "list", updateAllTickets: "undefined" }
         );
@@ -604,14 +597,12 @@ Para verificar o status atual da tarefa, use ekyte_get_task primeiro.`,
     },
     async (params: CompleteTaskInput) => {
       try {
-        const companyId = getCompanyId();
-
         const patchPayload = [
           { op: "replace", path: "/situation", value: 30 },
         ];
 
         await apiPatch(
-          `v2/companies/${companyId}/ctc-tasks/${params.task_id}`,
+          companyV2Url(`ctc-tasks/${params.task_id}`),
           patchPayload,
           { type: "list", updateAllTickets: "undefined" }
         );
@@ -652,8 +643,6 @@ O comentário será adicionado como uma nova mensagem na timeline da tarefa, vis
     },
     async (params: AddTaskCommentInput) => {
       try {
-        const companyId = getCompanyId();
-
         const payload = {
           description: `<div>${params.comment}</div>`,
           artifacts: [],
@@ -661,7 +650,7 @@ O comentário será adicionado como uma nova mensagem na timeline da tarefa, vis
         };
 
         await apiPost(
-          `v2/companies/${companyId}/ctc-tasks/${params.task_id}/comments`,
+          companyV2Url(`ctc-tasks/${params.task_id}/comments`),
           payload
         );
 

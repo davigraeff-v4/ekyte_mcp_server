@@ -194,3 +194,17 @@ export type AddTaskCommentInput = z.infer<typeof AddTaskCommentSchema>;
 
 export const ListTaskTypesSchema = PaginationSchema.strict();
 export type ListTaskTypesInput = z.infer<typeof ListTaskTypesSchema>;
+
+// ============ List Workflow Phases ============
+
+export const ListPhasesSchema = z.object({
+  workflow_id: z.number()
+    .int("workflow_id deve ser número inteiro")
+    .positive("workflow_id deve ser positivo")
+    .describe("ID do workflow. Obtenha via ekyte_list_task_types (campo workflow_id)."),
+  response_format: z.nativeEnum(ResponseFormat)
+    .default(ResponseFormat.MARKDOWN)
+    .describe("Formato de saída"),
+}).strict();
+
+export type ListPhasesInput = z.infer<typeof ListPhasesSchema>;
