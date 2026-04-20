@@ -12,8 +12,9 @@ export const USERS_PAGE_SIZE = 500;
 // Response limits
 export const CHARACTER_LIMIT = 25000;
 
-// Request timeouts (ms)
-export const REQUEST_TIMEOUT = 30000;
+// Request timeouts (ms) — some Ekyte endpoints (time-trackings/report) can
+// take 10–30s on cold start; add buffer so calls via EasyPanel don't cut off.
+export const REQUEST_TIMEOUT = 90000;
 
 // Task status mapping
 export const TASK_STATUS = {

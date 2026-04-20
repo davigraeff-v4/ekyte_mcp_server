@@ -28,9 +28,9 @@ import type { EkyteWorkspace, EkyteUser, EkyteTaskType, EkyteTask } from "../typ
 // ============ Helpers ============
 
 const PAGE_SIZE = 50;
-// Ekyte's /ctc-tasks endpoint caps results internally; fetch with a high limit
-// so client-side pagination sees as much data as the API is willing to give.
-const TASKS_FETCH_LIMIT = 5000;
+// Ekyte's /ctc-tasks endpoint returns ≤1200 items even with huge limits.
+// Keep the value modest so the API doesn't churn on large limits.
+const TASKS_FETCH_LIMIT = 2000;
 
 function formatResponse(data: unknown, markdown: string, format: ResponseFormat) {
   if (format === ResponseFormat.JSON) {
