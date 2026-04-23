@@ -195,7 +195,7 @@ Paginação client-side: 50 por página.`,
     },
     async (params: ListUsersInput) => {
       try {
-        const data = await apiGet<EkyteUser[]>(companyUrl("users"));
+        const data = await apiGet<EkyteUser[]>(companyUrl("users/editors/simple"));
         const all = Array.isArray(data) ? data : [];
 
         let filtered = all;

@@ -1,8 +1,10 @@
 # Ekyte MCP Server
 
-Servidor MCP (Model Context Protocol) que permite ao Claude (e outras IAs) interagir com a plataforma **Ekyte** para gestão de tarefas e apontamento de horas. Criado para uso interno da **V4 Company**, qualquer pessoa do time pode subir sua própria instância.
+Servidor MCP (Model Context Protocol) que permite ao Claude (e outras IAs) interagir com a plataforma **Ekyte** para gestão de tarefas e apontamento de horas.
 
 Toda a API usada é a **interna** (`https://api.ekyte.com/api/...`), autenticada por **JWT Bearer** (mesmo token que o front `app.ekyte.com` envia). Não usa a API pública `/v1.x`.
+
+**Autoria:** desenvolvido por **Pietro Piai** (lead) com contribuição de **Paulo D'Elia**, ambos da **V4 Ferraz Piai** (unidade franqueada da V4 Company). Liberado para qualquer franquia ou pessoa da V4 Company subir sua própria instância.
 
 **Repositório:** https://github.com/FerrazPiai/ekyte_mcp_server
 
@@ -11,6 +13,7 @@ Toda a API usada é a **interna** (`https://api.ekyte.com/api/...`), autenticada
 ## Sumário
 
 - [Pré-requisitos](#pré-requisitos)
+- [Instalação rápida via PRD (recomendado)](#instalação-rápida-via-prd-recomendado)
 - [Tools Disponíveis](#tools-disponíveis)
   - [Leitura (read-only)](#leitura-read-only)
   - [Escrita (destrutivo — pede confirmação)](#escrita-destrutivo--pede-confirmação)
@@ -24,6 +27,7 @@ Toda a API usada é a **interna** (`https://api.ekyte.com/api/...`), autenticada
   - [Claude Code (CLI)](#claude-code-cli--transporte-http-remoto)
   - [Claude Desktop — stdio local](#claude-desktop--transporte-stdio-local)
   - [Claude Desktop — HTTP remoto](#claude-desktop--transporte-http-remoto-com-mcp-remoto-instalado-no-easypanel)
+- [Skill do Claude para operar o Ekyte com segurança](#skill-do-claude-para-operar-o-ekyte-com-segurança)
 - [Desenvolvimento local](#desenvolvimento-local)
 - [Arquitetura](#arquitetura)
 - [Endpoints que a MCP usa](#endpoints-que-a-mcp-usa-referência)
@@ -41,6 +45,41 @@ Antes de começar, tenha em mãos:
   - Ou apenas **máquina local** com Node 18+ (se quiser usar só no Claude Desktop em stdio, sem deploy).
 - Conta Claude (**Claude Code CLI** ou **Claude Desktop**) onde a MCP será conectada.
 - Conta no **GitHub** (para fazer fork do repositório — opcional mas recomendado, facilita atualizações futuras).
+
+---
+
+## Instalação rápida via PRD (recomendado)
+
+O repo inclui o arquivo **[`PRD-INSTALACAO-MCP-EKYTE.md`](./PRD-INSTALACAO-MCP-EKYTE.md)** — um PRD (Product Requirements Document) pronto para o Claude Code executar a instalação sozinho, do zero ao smoke test. É o caminho mais rápido se você já tem Claude Code instalado e só quer "ligar" a MCP.
+
+**Como usar:**
+
+1. Clone o repo:
+   ```bash
+   git clone https://github.com/FerrazPiai/ekyte_mcp_server.git
+   cd ekyte_mcp_server
+   ```
+2. Abra o Claude Code dentro dessa pasta:
+   ```bash
+   claude
+   ```
+3. Mande o Claude executar o PRD:
+   ```
+   Executa este PRD de instalação: @PRD-INSTALACAO-MCP-EKYTE.md
+   ```
+
+O Claude vai guiar você por:
+
+- Obter o `EKYTE_BEARER_TOKEN` e `EKYTE_COMPANY_ID` (instruções passo-a-passo no DevTools)
+- Instalar dependências e buildar (`npm install && npm run build`), quando for modo local
+- Registrar a MCP no Claude Code em um dos dois modos:
+  - **3A — Stdio local:** a MCP roda na sua máquina (precisa de Node 18+ e credenciais locais)
+  - **3B — HTTP remoto:** aponta para um servidor já hospedado (EasyPanel, Coolify, Railway, etc.) — zero setup local
+- Validar com smoke test (`claude mcp list` + pedir uma listagem de workspaces no chat)
+
+> O PRD inclui **troubleshooting** para os erros comuns (401, 500, build falhou, MCP não aparece em `claude mcp list`). Se algo quebrar durante a instalação, é só pedir "resolve pelo troubleshooting do PRD".
+
+Se preferir fazer manualmente (sem o PRD), as seções abaixo cobrem cada parte isolada: [Configuração](#configuração) → [Deploy](#deploy) → [Conexão com o Claude](#conexão-com-o-claude).
 
 ---
 
@@ -90,14 +129,14 @@ Antes de começar, tenha em mãos:
    ```json
    {
      "title": "Campanha X",
-     "workspace_id": 124458,
-     "task_type_id": 44873,
+     "workspace_id": 12345,
+     "task_type_id": 67890,
      "phase_start_date": "2026-04-22",
      "phase_due_date": "2026-04-30",
      "phases": [
-       {"phase_id": 30759, "executor_id": "uuid-pietro", "effort_minutes": 60, "phase_due_date": "2026-04-24"},
-       {"phase_id": 37391, "executor_id": "uuid-edison", "effort_minutes": 90, "phase_due_date": "2026-04-27"},
-       {"phase_id": 30749, "executor_id": "uuid-paulo", "effort_minutes": 30, "phase_due_date": "2026-04-30"}
+       {"phase_id": 111, "executor_id": "00000000-0000-0000-0000-000000000001", "effort_minutes": 60, "phase_due_date": "2026-04-24"},
+       {"phase_id": 222, "executor_id": "00000000-0000-0000-0000-000000000002", "effort_minutes": 90, "phase_due_date": "2026-04-27"},
+       {"phase_id": 333, "executor_id": "00000000-0000-0000-0000-000000000003", "effort_minutes": 30, "phase_due_date": "2026-04-30"}
      ]
    }
    ```
@@ -120,7 +159,7 @@ Antes de começar, tenha em mãos:
 
 ```env
 EKYTE_BEARER_TOKEN=seu_jwt_aqui        # obrigatório
-EKYTE_COMPANY_ID=9312                  # obrigatório (numérico)
+EKYTE_COMPANY_ID=1234                  # obrigatório (numérico)
 TRANSPORT=http                         # "http" p/ servidor remoto, "stdio" p/ Claude Desktop local
 PORT=3000                              # porta HTTP (default 3000)
 ```
@@ -145,7 +184,7 @@ PORT=3000                              # porta HTTP (default 3000)
 Na mesma aba **Network** do DevTools, observe a URL das requisições para `api.ekyte.com`. Elas têm o formato:
 
 ```
-https://api.ekyte.com/api/companies/9312/workspaces
+https://api.ekyte.com/api/companies/1234/workspaces
                                    ^^^^
                                    esse é o company_id
 ```
@@ -156,11 +195,11 @@ O número que aparece depois de `/companies/` é o seu `EKYTE_COMPANY_ID`. Cada 
 
 Esta MCP é um container Docker (Node 20-alpine) que expõe HTTP na porta `3000`. Qualquer plataforma que aceite `Dockerfile` + domínio HTTPS funciona. Clique na plataforma que você usa para ir direto ao passo-a-passo:
 
-| [Easypanel](#easypanel-recomendado-para-v4-company) | [Coolify](#coolify) | [Railway](#railway) | [Render](#render) | [Fly.io](#flyio) | [VPS genérico](#vps-genérico-ubuntu--docker-compose--nginx) |
+| [Easypanel](#easypanel) | [Coolify](#coolify) | [Railway](#railway) | [Render](#render) | [Fly.io](#flyio) | [VPS genérico](#vps-genérico-ubuntu--docker-compose--nginx) |
 |---|---|---|---|---|---|
-| Self-hosted, painel visual, SSL automático — **usado pela V4 Company** | Self-hosted open-source, alternativa direta ao Easypanel | Cloud gerenciado, deploy em 2min via GitHub, ~$5/mês | Cloud gerenciado, plano Free (com sleep) ou Starter $7/mês | Edge global, deploy por CLI, ótimo para latência distribuída | Ubuntu + Docker Compose + Nginx + Certbot (qualquer VPS) |
+| Self-hosted, painel visual, SSL automático — stack original do projeto | Self-hosted open-source, alternativa direta ao Easypanel | Cloud gerenciado, deploy em 2min via GitHub, ~$5/mês | Cloud gerenciado, plano Free (com sleep) ou Starter $7/mês | Edge global, deploy por CLI, ótimo para latência distribuída | Ubuntu + Docker Compose + Nginx + Certbot (qualquer VPS) |
 
-### Easypanel (recomendado para V4 Company)
+### Easypanel
 
 O Easypanel faz o build do Dockerfile, configura SSL automático (Let's Encrypt) e injeta as env vars. Fluxo completo:
 
@@ -190,7 +229,7 @@ Na aba **Environment** do serviço, adicione:
 
 ```env
 EKYTE_BEARER_TOKEN=eyJhbGciOi...          # seu JWT extraído do DevTools
-EKYTE_COMPANY_ID=9312                     # o ID da sua unidade
+EKYTE_COMPANY_ID=1234                     # o ID da sua unidade
 TRANSPORT=http
 PORT=3000
 NODE_ENV=production
@@ -535,7 +574,7 @@ O `EKYTE_BEARER_TOKEN` é um JWT longo com acesso à API Ekyte — **sempre** co
 ```bash
 fly secrets set \
   EKYTE_BEARER_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
-  EKYTE_COMPANY_ID=9312
+  EKYTE_COMPANY_ID=1234
 ```
 
 > ⚠️ **Nunca** commite o `EKYTE_BEARER_TOKEN` no `fly.toml` nem em arquivos `.env` versionados. Secrets do Fly são o canal correto.
@@ -794,7 +833,7 @@ Rode o servidor em modo `stdio` (sem HTTP). No `claude_desktop_config.json`:
       "args": ["C:/caminho/para/ekyte-mcp-server/dist/index.js"],
       "env": {
         "EKYTE_BEARER_TOKEN": "seu_jwt",
-        "EKYTE_COMPANY_ID": "9312",
+        "EKYTE_COMPANY_ID": "1234",
         "TRANSPORT": "stdio"
       }
     }
@@ -814,6 +853,87 @@ Rode o servidor em modo `stdio` (sem HTTP). No `claude_desktop_config.json`:
 }
 ```
 
+## Skill do Claude para operar o Ekyte com segurança
+
+Conectar a MCP só dá ao Claude *acesso* às tools. Sem contexto adicional, a IA pode chutar IDs de workspace, inventar datas ou criar tarefa no cliente errado — especialmente em operações destrutivas.
+
+O repo inclui uma **skill pronta** em [`.claude/skills/ekyte/`](./.claude/skills/ekyte/) que resolve isso: ensina o Claude a sempre listar antes de criar, confirmar todos os dados com o usuário antes de operações destrutivas, usar UUIDs corretos, formato `AAAA-MM-DD` para datas e filtrar listagens por workspace para performance.
+
+**Se você seguiu o [PRD de instalação](#instalação-rápida-via-prd-recomendado), a skill já foi instalada automaticamente** em `~/.claude/skills/ekyte/` junto com a MCP — nada a fazer aqui.
+
+Se instalou a MCP manualmente e quer adicionar a skill depois, a forma mais rápida é pedir no chat do Claude Code:
+
+> *"Instala a skill do Ekyte seguindo o Passo 5 (Local) ou Passo 3 (Remoto) do [PRD-INSTALACAO-MCP-EKYTE.md](./PRD-INSTALACAO-MCP-EKYTE.md)"*
+
+O Claude executa os comandos abaixo automaticamente — essa seção documenta o que ele faz (útil se você preferir rodar manualmente ou auditar antes).
+
+### O que a skill garante
+
+- **Nunca cria tarefa sem confirmar:** sempre lista workspaces, task types, phases e usuários antes de chamar `ekyte_create_task`, e valida todos os dados com o usuário.
+- **Nunca inventa IDs:** `executor_id` sempre é UUID (ex: `00000000-0000-0000-0000-000000000001`), nunca número — a skill lembra disso.
+- **Formato de datas correto:** `AAAA-MM-DD` (sem hora), `HH:MM` para horários, `end_time > start_time` em apontamentos.
+- **Confirmação em operações destrutivas:** criar tarefa, completar tarefa, deletar apontamento, apontar horas — tudo pergunta antes de executar.
+- **Performance:** usa `search` nas listagens (evita paginar 600+ workspaces), filtra `list_tasks` por workspace_id, avisa quando listagem pode demorar (10-30s).
+- **Sabe a diferença entre** `ekyte_update_task` (fase atual) e `ekyte_update_phase` (fase específica não-atual) — bug comum quando a IA não tem contexto.
+
+### Como instalar a skill (one-liner, sem clonar o repo)
+
+Ideal para quem só usa a MCP via HTTP remoto. Baixa os dois arquivos do GitHub direto para `~/.claude/skills/ekyte/`:
+
+**Linux / macOS (bash/zsh):**
+
+```bash
+mkdir -p ~/.claude/skills/ekyte && \
+  curl -fsSL -o ~/.claude/skills/ekyte/SKILL.md \
+    https://raw.githubusercontent.com/FerrazPiai/ekyte_mcp_server/main/.claude/skills/ekyte/SKILL.md && \
+  curl -fsSL -o ~/.claude/skills/ekyte/reference.md \
+    https://raw.githubusercontent.com/FerrazPiai/ekyte_mcp_server/main/.claude/skills/ekyte/reference.md
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$dst = "$env:USERPROFILE\.claude\skills\ekyte"
+New-Item -ItemType Directory -Force -Path $dst | Out-Null
+$base = "https://raw.githubusercontent.com/FerrazPiai/ekyte_mcp_server/main/.claude/skills/ekyte"
+Invoke-WebRequest -Uri "$base/SKILL.md"     -OutFile "$dst\SKILL.md"
+Invoke-WebRequest -Uri "$base/reference.md" -OutFile "$dst\reference.md"
+```
+
+Pronto — a skill fica disponível **em qualquer sessão** do Claude Code/Desktop, independente de projeto.
+
+### Como instalar a skill (via git clone)
+
+Se você já **clonou o repo** para fazer deploy local, copiar a skill para o global é instantâneo:
+
+```bash
+# Linux / macOS
+mkdir -p ~/.claude/skills
+cp -r .claude/skills/ekyte ~/.claude/skills/
+
+# Windows (PowerShell)
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\skills" | Out-Null
+Copy-Item -Recurse .claude\skills\ekyte "$env:USERPROFILE\.claude\skills\"
+```
+
+Alternativa **sem copiar** (per-project): se você abre o Claude Code **dentro da pasta do repo**, a skill é detectada automaticamente via `.claude/skills/ekyte/` — sem precisar instalar no global.
+
+### Usando a skill
+
+Depois de instalada, é só pedir em linguagem natural:
+
+> *"Crie uma tarefa no Ekyte para o cliente X, fase Y, responsável Z"*
+> *"Quantas horas foram apontadas essa semana no workspace Acme?"*
+> *"Liste as tarefas ativas do responsável Fulano"*
+
+O Claude invoca a skill `ekyte` automaticamente (Code ou Desktop) e segue o fluxo correto: lista → confirma → executa. Para forçar invocação explícita, use `/ekyte <o que quer fazer>`.
+
+### Atualizando a skill
+
+Quando o repo receber updates no `SKILL.md` ou `reference.md`, basta rodar o one-liner (ou `git pull` + `cp -r` se instalou via clone) de novo — ele sobrescreve os arquivos locais com a versão mais recente do `main`.
+
+> ⚠️ Sem a skill, o Claude pode criar tarefas no workspace errado, chutar UUIDs de usuário ou pular a confirmação em operações destrutivas. Se reinstalar a MCP em outra máquina, reinstale a skill também (o PRD cuida disso automaticamente).
+
 ## Desenvolvimento local
 
 ```bash
@@ -821,10 +941,10 @@ npm install
 npm run build
 
 # Modo stdio (default) — para Claude Desktop
-EKYTE_BEARER_TOKEN=xxx EKYTE_COMPANY_ID=9312 npm start
+EKYTE_BEARER_TOKEN=xxx EKYTE_COMPANY_ID=1234 npm start
 
 # Modo HTTP — simula o deploy EasyPanel
-EKYTE_BEARER_TOKEN=xxx EKYTE_COMPANY_ID=9312 TRANSPORT=http npm start
+EKYTE_BEARER_TOKEN=xxx EKYTE_COMPANY_ID=1234 TRANSPORT=http npm start
 
 # Hot reload
 npm run dev
