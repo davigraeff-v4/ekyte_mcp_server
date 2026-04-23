@@ -155,7 +155,7 @@ Crie (ou atualize) o arquivo `.mcp.json` na raiz do repositorio onde o usuario q
 
 > **Dica:** Use `pwd` dentro da pasta do projeto MCP para descobrir o caminho absoluto para `args`.
 > **Se o `.env` ja tem as credenciais**, use os valores de la automaticamente — nao peca ao usuario para colar de novo.
-> **O `.mcp.json` ja esta no `.gitignore`** deste repositorio. Se for instalar em outro repo, lembre de adicionar `.mcp.json` ao `.gitignore` de la tambem (contem credenciais sensiveis).
+> **O `.mcp.json` ja esta no `.gitignore`** deste repositorio. Se for instalar em outro repo, lembre de adicionar `.mcp.json` ao `.gitignore` de la tambem (contem credenciais sensíveis).
 
 ---
 
