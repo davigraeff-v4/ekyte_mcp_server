@@ -4,7 +4,7 @@ Servidor MCP (Model Context Protocol) que permite ao Claude (e outras IAs) inter
 
 Toda a API usada é a **interna** (`https://api.ekyte.com/api/...`), autenticada por **JWT Bearer** (mesmo token que o front `app.ekyte.com` envia). Não usa a API pública `/v1.x`.
 
-**Autoria:** desenvolvido por **Pietro Piai** (lead) com contribuição de **Paulo D'Elia**, ambos da **V4 Ferraz Piai** (unidade franqueada da V4 Company). Liberado para qualquer franquia ou pessoa da V4 Company subir sua própria instância.
+**Autoria:** desenvolvido por **Pietro Piai** com contribuição de **Paulo D'Elia**, ambos da **V4 Ferraz Piai** (unidade franqueada da V4 Company). Liberado para qualquer franquia ou pessoa da V4 Company subir sua própria instância.
 
 **Repositório:** https://github.com/FerrazPiai/ekyte_mcp_server
 
