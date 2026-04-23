@@ -33,10 +33,13 @@ import {
   UpdateTaskSchema,
   CompleteTaskSchema,
   AddTaskCommentSchema,
+  UpdatePhaseSchema,
   type CreateTaskInput,
   type UpdateTaskInput,
   type CompleteTaskInput,
   type AddTaskCommentInput,
+  type UpdatePhaseInput,
+  type TaskPhaseFlowItem,
 } from "../schemas/task.js";
 import { CHARACTER_LIMIT } from "../constants.js";
 
@@ -455,21 +458,24 @@ Use ekyte_list_time_entries para verificar o apontamento correto antes de deleta
   server.registerTool(
     "ekyte_create_task",
     {
-      title: "Criar Tarefa no Ekyte",
-      description: `Cria uma nova tarefa no Ekyte.
+      title: "Criar Tarefa no Ekyte (fase única ou multi-fase)",
+      description: `Cria uma nova tarefa no Ekyte. Suporta DOIS modos:
 
-ANTES de usar esta ferramenta, você DEVE:
-1. Usar ekyte_list_workspaces para obter o workspace_id correto
-2. Usar ekyte_list_task_types para obter o task_type_id correto
-3. Usar ekyte_list_users para obter o executor_id (UUID) correto
+MODO 1 — FASE ÚNICA (simples):
+Forneça executor_id + phase_id. Tarefa nasce com 1 fase.
 
-Parâmetros obrigatórios:
-- title: Título da tarefa
-- workspace_id, task_type_id, executor_id, phase_id
-- phase_start_date, phase_due_date (AAAA-MM-DD)
+MODO 2 — MULTI-FASE (com executores diferentes por fase):
+Forneça phases[] com uma entrada por fase. Cada entrada tem { phase_id, executor_id, effort_minutes, phase_start_date?, phase_due_date? }.
+A tarefa começa na PRIMEIRA fase da lista.
 
-IMPORTANTE: Sempre confirme TODOS os dados com o usuário antes de criar.
-Erros aqui impactam diretamente o controle de performance da empresa.`,
+Fluxo recomendado ANTES:
+1. ekyte_list_workspaces → workspace_id
+2. ekyte_list_task_types → task_type_id (+ workflow_id)
+3. ekyte_list_phases(workflow_id) → phase_ids disponíveis
+4. ekyte_list_users → executor_id (UUID)
+5. Chamar este tool
+
+IMPORTANTE: Sempre confirme TODOS os dados com o usuário antes de criar.`,
       inputSchema: CreateTaskSchema,
       annotations: {
         readOnlyHint: false,
@@ -480,11 +486,73 @@ Erros aqui impactam diretamente o controle de performance da empresa.`,
     },
     async (params: CreateTaskInput) => {
       try {
-        const estimatedHours = Math.floor(params.estimated_time_minutes / 60);
-        const estimatedMins = params.estimated_time_minutes % 60;
-        const timeFormatted = `${estimatedHours.toString().padStart(2, "0")}:${estimatedMins.toString().padStart(2, "0")}`;
+        const fmt = (m: number) => {
+          const h = Math.floor(m / 60);
+          const mm = m % 60;
+          return {
+            hour: h.toString().padStart(2, "0"),
+            minute: mm.toString().padStart(2, "0"),
+            formatted: `${h.toString().padStart(2, "0")}:${mm.toString().padStart(2, "0")}`,
+          };
+        };
 
-        const payload = {
+        const isMultiPhase = Array.isArray(params.phases) && params.phases.length >= 1;
+
+        // Build flow[] and determine top-level fields
+        let flow: Array<Record<string, unknown>>;
+        let topLevelExecutorId: string;
+        let topLevelPhaseId: number;
+        let totalEffort: number;
+
+        if (isMultiPhase) {
+          const phases = params.phases as TaskPhaseFlowItem[];
+          flow = phases.map((p) => {
+            const eff = fmt(p.effort_minutes);
+            return {
+              effort: p.effort_minutes,
+              taskTypeId: params.task_type_id,
+              executorId: p.executor_id,
+              executor: { id: p.executor_id },
+              phaseId: p.phase_id,
+              phase: { id: p.phase_id },
+              active: 1,
+              phaseStartDate: p.phase_start_date ?? params.phase_start_date,
+              phaseDueDate: p.phase_due_date ?? params.phase_due_date,
+              effortHour: eff.hour,
+              effortMinute: eff.minute,
+              effortFormated: eff.formatted,
+            };
+          });
+          topLevelExecutorId = phases[0].executor_id;
+          topLevelPhaseId = phases[0].phase_id;
+          totalEffort = phases.reduce((s, p) => s + p.effort_minutes, 0);
+        } else {
+          // Single-phase (params.executor_id + params.phase_id guaranteed by schema refine)
+          const executorId = params.executor_id!;
+          const phaseId = params.phase_id!;
+          const eff = fmt(params.estimated_time_minutes);
+          flow = [{
+            effort: params.estimated_time_minutes,
+            taskTypeId: params.task_type_id,
+            executorId,
+            executor: { id: executorId },
+            phaseId,
+            phase: { id: phaseId },
+            active: 1,
+            phaseStartDate: params.phase_start_date,
+            phaseDueDate: params.phase_due_date,
+            effortHour: eff.hour,
+            effortMinute: eff.minute,
+            effortFormated: eff.formatted,
+          }];
+          topLevelExecutorId = executorId;
+          topLevelPhaseId = phaseId;
+          totalEffort = params.estimated_time_minutes;
+        }
+
+        const totalFmt = fmt(totalEffort);
+
+        const payload: Record<string, unknown> = {
           title: params.title,
           quantity: 0,
           workspaceId: params.workspace_id,
@@ -492,18 +560,18 @@ Erros aqui impactam diretamente o controle de performance da empresa.`,
           ctcTaskTypeId: params.task_type_id,
           ctcTaskType: { id: params.task_type_id },
           allocationType: 20,
-          estimatedTime: params.estimated_time_minutes,
-          estimatedTimeFormated: timeFormatted,
-          estimatedTimeFormatedHour: estimatedHours.toString().padStart(2, "0"),
-          estimatedTimeFormatedMinute: estimatedMins.toString().padStart(2, "0"),
+          estimatedTime: totalEffort,
+          estimatedTimeFormated: totalFmt.formatted,
+          estimatedTimeFormatedHour: totalFmt.hour,
+          estimatedTimeFormatedMinute: totalFmt.minute,
           phaseStartDate: params.phase_start_date,
           phaseDueDate: params.phase_due_date,
           currentDueDate: params.phase_due_date,
-          description: params.description,
-          executorId: params.executor_id,
-          executor: { id: params.executor_id },
-          phaseId: params.phase_id,
-          phase: { id: params.phase_id },
+          description: params.description ? `<div>${params.description}</div>` : "",
+          executorId: topLevelExecutorId,
+          executor: { id: topLevelExecutorId },
+          phaseId: topLevelPhaseId,
+          phase: { id: topLevelPhaseId },
           artifacts: [],
           workspaces: [],
           executors: [],
@@ -512,26 +580,15 @@ Erros aqui impactam diretamente o controle de performance da empresa.`,
           titleChanged: true,
           estimatedTimeChanged: false,
           datesChanged: false,
-          flow: [{
-            effort: params.estimated_time_minutes,
-            taskTypeId: params.task_type_id,
-            executorId: params.executor_id,
-            executor: { id: params.executor_id },
-            phaseId: params.phase_id,
-            phase: { id: params.phase_id },
-            active: 1,
-            phaseStartDate: params.phase_start_date,
-            phaseDueDate: params.phase_due_date,
-            effortHour: estimatedHours.toString().padStart(2, "0"),
-            effortMinute: estimatedMins.toString().padStart(2, "0"),
-            effortFormated: timeFormatted,
-          }],
+          flow,
           ctcTaskProject: {},
           ctcTaskProjectPhase: {},
           ctcTaskPredecessor: {},
           coPhase: {},
           typeDuplicateForms: null,
         };
+
+        if (params.priority !== undefined) payload.priority = params.priority;
 
         const result = await apiPost<Record<string, unknown> | number>(
           companyUrl("ctc-tasks"),
@@ -542,22 +599,26 @@ Erros aqui impactam diretamente o controle de performance da empresa.`,
           ? result
           : (result as Record<string, unknown>)?.id ?? "desconhecido";
 
-        return {
-          content: [{ type: "text" as const, text: [
-            "# ✅ Tarefa Criada com Sucesso!",
-            "",
-            `- **ID**: #${taskId}`,
-            `- **Título**: ${params.title}`,
-            `- **Workspace**: ID ${params.workspace_id}`,
-            `- **Tipo de Tarefa**: ID ${params.task_type_id}`,
-            `- **Responsável**: ${params.executor_id}`,
-            `- **Etapa**: ID ${params.phase_id}`,
-            `- **Tempo Estimado**: ${timeFormatted}`,
-            `- **Início**: ${params.phase_start_date}`,
-            `- **Entrega**: ${params.phase_due_date}`,
-            params.description ? `- **Descrição**: ${params.description}` : "",
-          ].filter(Boolean).join("\n") }],
-        };
+        const summary = [
+          "# ✅ Tarefa Criada com Sucesso!",
+          "",
+          `- **ID**: #${taskId}`,
+          `- **Título**: ${params.title}`,
+          `- **Workspace**: ID ${params.workspace_id}`,
+          `- **Tipo de Tarefa**: ID ${params.task_type_id}`,
+          `- **Tempo Estimado Total**: ${totalFmt.formatted}`,
+          `- **Início**: ${params.phase_start_date}`,
+          `- **Entrega**: ${params.phase_due_date}`,
+          "",
+          `### Fluxo (${flow.length} fase${flow.length > 1 ? "s" : ""}):`,
+          ...flow.map((f, i) =>
+            `${i + 1}. Phase ${f.phaseId} → ${f.executorId} (${fmt(f.effort as number).formatted})`
+          ),
+          "",
+          params.description ? `**Descrição**: ${params.description}` : "",
+        ].filter(Boolean).join("\n");
+
+        return { content: [{ type: "text" as const, text: summary }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
@@ -568,19 +629,20 @@ Erros aqui impactam diretamente o controle de performance da empresa.`,
   server.registerTool(
     "ekyte_update_task",
     {
-      title: "Editar Tarefa no Ekyte",
-      description: `Atualiza campos de uma tarefa existente no Ekyte usando JSON Patch.
+      title: "Editar Tarefa no Ekyte (fase atual / top-level)",
+      description: `Atualiza campos TOP-LEVEL de uma tarefa existente (título, descrição, executor/fase ATIVA, datas da fase atual, prioridade) usando JSON Patch.
 
-Campos que podem ser atualizados (todos opcionais, pelo menos 1 obrigatório):
+Para editar executor/datas/esforço de uma FASE ESPECÍFICA não-atual, use ekyte_update_phase em vez deste.
+
+Campos opcionais (pelo menos 1 obrigatório):
 - title: Novo título
-- description: Nova descrição (texto simples, será convertido para HTML)
-- executor_id: UUID do novo responsável
-- phase_id: ID da nova etapa/fase
-- phase_start_date: Nova data de início (AAAA-MM-DD)
-- phase_due_date: Nova data de entrega (AAAA-MM-DD)
-- priority: Nova prioridade (0-100)
+- description: Nova descrição (texto simples → convertido para HTML)
+- executor_id: UUID do novo responsável da fase atual
+- phase_id: ID da nova fase ATIVA (muda a fase corrente)
+- phase_start_date / phase_due_date: Datas da fase atual
+- priority_group: Grupo de prioridade (35=Baixa, 50=Média, 60=Alta, 90=Urgente)
+- priority: Prioridade bruta (0-1000) — normalmente prefira priority_group
 
-ANTES de usar, confirme o task_id correto com ekyte_list_tasks ou ekyte_get_task.
 IMPORTANTE: Sempre confirme as alterações com o usuário antes de executar.`,
       inputSchema: UpdateTaskSchema,
       annotations: {
@@ -592,7 +654,6 @@ IMPORTANTE: Sempre confirme as alterações com o usuário antes de executar.`,
     },
     async (params: UpdateTaskInput) => {
       try {
-        // Build JSON Patch operations array
         const patchOps: Array<{ op: string; path: string; value: unknown }> = [];
 
         if (params.title !== undefined) {
@@ -614,6 +675,9 @@ IMPORTANTE: Sempre confirme as alterações com o usuário antes de executar.`,
           patchOps.push({ op: "replace", path: "/phaseDueDate", value: params.phase_due_date });
           patchOps.push({ op: "replace", path: "/currentDueDate", value: params.phase_due_date });
         }
+        if (params.priority_group !== undefined) {
+          patchOps.push({ op: "replace", path: "/priorityGroup", value: params.priority_group });
+        }
         if (params.priority !== undefined) {
           patchOps.push({ op: "replace", path: "/priority", value: params.priority });
         }
@@ -631,6 +695,76 @@ IMPORTANTE: Sempre confirme as alterações com o usuário antes de executar.`,
             "# ✅ Tarefa Atualizada com Sucesso!",
             "",
             `**Tarefa**: #${params.task_id}`,
+            "",
+            "### Alterações aplicadas:",
+            changes,
+          ].join("\n") }],
+        };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
+      }
+    }
+  );
+
+  // -------- Update a Specific Phase of a Task --------
+  server.registerTool(
+    "ekyte_update_phase",
+    {
+      title: "Editar Fase Específica de uma Tarefa (executor, esforço, datas)",
+      description: `Atualiza uma fase específica dentro de uma tarefa — permite trocar executor/datas/esforço de QUALQUER fase do fluxo, não só da fase atual.
+
+Caso de uso: "mudar quem é o responsável pela fase de Execução da tarefa #123", sem alterar as outras fases.
+
+Fluxo recomendado:
+1. ekyte_list_task_flow_phases(task_id) → ver todas as fases e seus phase_ids
+2. ekyte_update_phase(task_id, phase_id, ...campos a trocar)
+
+Campos opcionais (pelo menos 1 obrigatório):
+- executor_id: Novo responsável desta fase (UUID)
+- effort_minutes: Novo tempo estimado desta fase (minutos)
+- phase_start_date: Nova data de início desta fase (AAAA-MM-DD)
+- phase_due_date: Nova data de entrega desta fase (AAAA-MM-DD)
+
+IMPORTANTE: Confirme as alterações com o usuário antes de executar.`,
+      inputSchema: UpdatePhaseSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (params: UpdatePhaseInput) => {
+      try {
+        const patchOps: Array<{ op: string; path: string; value: unknown }> = [];
+
+        if (params.executor_id !== undefined) {
+          patchOps.push({ op: "replace", path: "/executorId", value: params.executor_id });
+        }
+        if (params.effort_minutes !== undefined) {
+          patchOps.push({ op: "replace", path: "/effort", value: params.effort_minutes });
+        }
+        if (params.phase_start_date !== undefined) {
+          patchOps.push({ op: "replace", path: "/phaseStartDate", value: `${params.phase_start_date}T00:00:00` });
+        }
+        if (params.phase_due_date !== undefined) {
+          patchOps.push({ op: "replace", path: "/phaseDueDate", value: `${params.phase_due_date}T00:00:00` });
+        }
+
+        await apiPatch(
+          companyV2Url(`ctc-tasks/${params.task_id}/flow-phase/${params.phase_id}`),
+          patchOps,
+          { type: "list" }
+        );
+
+        const changes = patchOps.map((op) => `- **${op.path.replace("/", "")}**: ${op.value}`).join("\n");
+
+        return {
+          content: [{ type: "text" as const, text: [
+            "# ✅ Fase Atualizada com Sucesso!",
+            "",
+            `**Tarefa**: #${params.task_id}`,
+            `**Fase**: ${params.phase_id}`,
             "",
             "### Alterações aplicadas:",
             changes,

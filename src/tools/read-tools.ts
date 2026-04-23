@@ -16,12 +16,14 @@ import {
   ListTasksSchema,
   GetTaskSchema,
   ListPhasesSchema,
+  ListTaskFlowPhasesSchema,
   type ListWorkspacesInput,
   type ListUsersInput,
   type ListTaskTypesInput,
   type ListTasksInput,
   type GetTaskInput,
   type ListPhasesInput,
+  type ListTaskFlowPhasesInput,
 } from "../schemas/task.js";
 import type { EkyteWorkspace, EkyteUser, EkyteTaskType, EkyteTask } from "../types.js";
 
@@ -500,6 +502,91 @@ Retorna: id, título, status, responsável, datas, tempo estimado/real, workspac
             "",
           ]).flat(),
           hasMore ? `➡️ Mais resultados na página ${nextPage}` : "✅ Fim dos resultados.",
+        ].join("\n");
+
+        return {
+          content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }],
+        };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
+      }
+    }
+  );
+
+  // -------- List Task Flow Phases (per-task phase flow with executors) --------
+  server.registerTool(
+    "ekyte_list_task_flow_phases",
+    {
+      title: "Listar Fases de uma Tarefa (com Executor por Fase)",
+      description: `Lista TODAS as fases de uma tarefa específica, mostrando quem é o responsável (executor), datas e tempo estimado POR FASE.
+
+Use ANTES de editar executor/datas/esforço de uma fase específica com ekyte_update_phase.
+
+Diferença vs ekyte_list_phases:
+- ekyte_list_phases: lista fases do WORKFLOW (template) — o que pode existir.
+- ekyte_list_task_flow_phases: lista fases DESTA TAREFA — o que existe de fato, com quem.
+
+Retorna para cada fase: phase_id, sequential, nome, executor (UUID + nome), effort, start/due date.`,
+      inputSchema: ListTaskFlowPhasesSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (params: ListTaskFlowPhasesInput) => {
+      try {
+        const data = await apiGet<Record<string, unknown>[]>(
+          companyV2Url(`ctc-tasks/${params.task_id}/flow-phases`)
+        );
+
+        const phases = Array.isArray(data) ? data : [];
+        if (phases.length === 0) {
+          return { content: [{ type: "text" as const, text: `Nenhuma fase encontrada para a tarefa #${params.task_id}.` }] };
+        }
+
+        const formatMinutes = (mins: number): string => {
+          const h = Math.floor(mins / 60);
+          const m = mins % 60;
+          return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
+        };
+
+        const sorted = [...phases].sort((a, b) => (a.sequential as number) - (b.sequential as number));
+
+        const output = {
+          task_id: params.task_id,
+          count: sorted.length,
+          items: sorted.map((p) => {
+            const phase = p.phase as Record<string, unknown> | undefined;
+            const executor = p.executor as Record<string, unknown> | undefined;
+            return {
+              flow_id: p.id,
+              phase_id: p.phaseId,
+              phase_name: phase?.name ?? "-",
+              sequential: p.sequential,
+              executor_id: p.executorId,
+              executor_name: executor?.userName ?? "-",
+              effort_minutes: p.effort,
+              actual_time_minutes: p.actualTime,
+              phase_start_date: typeof p.phaseStartDate === "string" ? p.phaseStartDate.split("T")[0] : null,
+              phase_due_date: typeof p.phaseDueDate === "string" ? p.phaseDueDate.split("T")[0] : null,
+            };
+          }),
+        };
+
+        const markdown = [
+          `# Fases da Tarefa #${params.task_id}`,
+          "",
+          `${sorted.length} fase(s)`,
+          "",
+          "| Seq | Phase ID | Nome | Executor | Estimado | Realizado | Início | Entrega |",
+          "|-----|----------|------|----------|----------|-----------|--------|---------|",
+          ...sorted.map((p) => {
+            const phase = p.phase as Record<string, unknown> | undefined;
+            const executor = p.executor as Record<string, unknown> | undefined;
+            return `| ${p.sequential} | ${p.phaseId} | ${phase?.name ?? "-"} | ${executor?.userName ?? "-"} | ${formatMinutes(p.effort as number ?? 0)} | ${formatMinutes(p.actualTime as number ?? 0)} | ${typeof p.phaseStartDate === "string" ? p.phaseStartDate.split("T")[0] : "-"} | ${typeof p.phaseDueDate === "string" ? p.phaseDueDate.split("T")[0] : "-"} |`;
+          }),
         ].join("\n");
 
         return {

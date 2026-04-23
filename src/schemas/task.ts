@@ -57,6 +57,23 @@ export const GetTaskSchema = z.object({
 
 export type GetTaskInput = z.infer<typeof GetTaskSchema>;
 
+// ============ Phase Flow Item (used in multi-phase create) ============
+
+export const TaskPhaseFlowItemSchema = z.object({
+  phase_id: z.number().int().positive()
+    .describe("ID da fase. Use ekyte_list_phases ou ekyte_list_task_flow_phases (em task existente)."),
+  executor_id: UserIdSchema
+    .describe("UUID do responsável POR ESTA FASE específica."),
+  effort_minutes: z.number().int().min(1).max(9999).default(60)
+    .describe("Tempo estimado para esta fase em minutos (padrão 60)."),
+  phase_start_date: DateSchema.optional()
+    .describe("Data de início desta fase (opcional, padrão: phase_start_date da tarefa)."),
+  phase_due_date: DateSchema.optional()
+    .describe("Data de entrega desta fase (opcional, padrão: phase_due_date da tarefa)."),
+}).strict();
+
+export type TaskPhaseFlowItem = z.infer<typeof TaskPhaseFlowItemSchema>;
+
 // ============ Create Task ============
 
 export const CreateTaskSchema = z.object({
@@ -69,27 +86,35 @@ export const CreateTaskSchema = z.object({
     .int()
     .positive()
     .describe("ID do tipo de tarefa. Use ekyte_list_task_types para descobrir o ID."),
-  executor_id: UserIdSchema
-    .describe("UUID do responsável pela tarefa. Use ekyte_list_users para descobrir."),
+  executor_id: UserIdSchema.optional()
+    .describe("UUID do responsável principal. Obrigatório se phases[] NÃO for fornecido. Se phases[] for fornecido, é ignorado."),
   phase_id: z.number()
     .int()
     .positive()
-    .describe("ID da etapa/fase inicial da tarefa."),
+    .optional()
+    .describe("ID da etapa/fase inicial. Obrigatório se phases[] NÃO for fornecido. Se phases[] for fornecido, é ignorado."),
   estimated_time_minutes: z.number()
     .int()
     .min(1, "Tempo estimado deve ser pelo menos 1 minuto")
     .max(9999, "Tempo estimado máximo é 9999 minutos")
     .default(60)
-    .describe("Tempo estimado em minutos (ex: 60 para 1 hora, 120 para 2 horas)"),
+    .describe("Tempo estimado total em minutos (ex: 60 para 1 hora). Ignorado em multi-fase: soma dos esforços de phases[]."),
   phase_start_date: DateSchema
-    .describe("Data de início da etapa no formato AAAA-MM-DD"),
+    .describe("Data de início padrão (AAAA-MM-DD). Cada fase pode sobrescrever em phases[]."),
   phase_due_date: DateSchema
-    .describe("Data de entrega da etapa no formato AAAA-MM-DD"),
+    .describe("Data de entrega padrão (AAAA-MM-DD). Cada fase pode sobrescrever em phases[]."),
   description: z.string()
     .max(5000, "Descrição deve ter no máximo 5000 caracteres")
     .default("")
     .describe("Descrição detalhada da tarefa (opcional)"),
-}).strict();
+  priority: z.number().int().min(0).max(1000).optional()
+    .describe("Prioridade (0-1000). Ex: 100=Baixa, 300=Média, 500=Alta. Opcional."),
+  phases: z.array(TaskPhaseFlowItemSchema).min(1).optional()
+    .describe("MULTI-FASE: lista de fases com executores distintos. Quando fornecido, executor_id/phase_id de cima são IGNORADOS — a tarefa começa na primeira fase da lista. Use para criar tarefas com pessoas diferentes em cada etapa do fluxo."),
+}).strict().refine(
+  (d) => (d.phases && d.phases.length >= 1) || (!!d.executor_id && !!d.phase_id),
+  { message: "Forneça 'phases[]' (multi-fase) OU ambos 'executor_id' + 'phase_id' (fase única)." }
+);
 
 export type CreateTaskInput = z.infer<typeof CreateTaskSchema>;
 
@@ -137,31 +162,69 @@ export const UpdateTaskSchema = z.object({
     .describe("Nova descrição da tarefa em texto simples (será convertido para HTML). Opcional."),
   executor_id: UserIdSchema
     .optional()
-    .describe("UUID do novo responsável (opcional). Use ekyte_list_users para descobrir."),
+    .describe("UUID do novo responsável da FASE ATUAL (opcional). Para trocar executor de uma fase específica não-atual, use ekyte_update_phase. Use ekyte_list_users para descobrir."),
   phase_id: z.number().int().positive()
     .optional()
-    .describe("ID da nova etapa/fase (opcional)."),
+    .describe("ID da nova fase ATIVA da tarefa (opcional). Use ekyte_list_task_flow_phases para ver as fases disponíveis."),
   phase_start_date: DateSchema
     .optional()
-    .describe("Nova data de início da etapa (AAAA-MM-DD). Opcional."),
+    .describe("Nova data de início da etapa atual (AAAA-MM-DD). Opcional."),
   phase_due_date: DateSchema
     .optional()
-    .describe("Nova data de entrega da etapa (AAAA-MM-DD). Opcional."),
-  priority: z.number().int().min(0).max(100)
+    .describe("Nova data de entrega da etapa atual (AAAA-MM-DD). Opcional."),
+  priority_group: z.number().int().min(0).max(100)
     .optional()
-    .describe("Nova prioridade da tarefa (0-100). Opcional."),
+    .describe("Grupo de prioridade (0-100). É o campo que a UI do Ekyte usa: 35=Baixa, 50=Média, 60=Alta, 90=Urgente. Opcional."),
+  priority: z.number().int().min(0).max(1000)
+    .optional()
+    .describe("Prioridade numérica bruta (0-1000). Normalmente você quer priority_group em vez disso. Opcional."),
 }).strict().refine(
   (data) => {
-    // At least one field must be provided
     return data.title !== undefined || data.description !== undefined ||
       data.executor_id !== undefined || data.phase_id !== undefined ||
       data.phase_start_date !== undefined || data.phase_due_date !== undefined ||
-      data.priority !== undefined;
+      data.priority !== undefined || data.priority_group !== undefined;
   },
   { message: "Pelo menos um campo deve ser informado para atualização." }
 );
 
 export type UpdateTaskInput = z.infer<typeof UpdateTaskSchema>;
+
+// ============ List Task Flow Phases ============
+
+export const ListTaskFlowPhasesSchema = z.object({
+  task_id: TaskIdSchema,
+  response_format: z.nativeEnum(ResponseFormat)
+    .default(ResponseFormat.MARKDOWN)
+    .describe("Formato de saída"),
+}).strict();
+
+export type ListTaskFlowPhasesInput = z.infer<typeof ListTaskFlowPhasesSchema>;
+
+// ============ Update Phase of a Task ============
+
+export const UpdatePhaseSchema = z.object({
+  task_id: TaskIdSchema,
+  phase_id: z.number().int().positive()
+    .describe("ID da fase a atualizar dentro desta tarefa. Use ekyte_list_task_flow_phases para ver as fases e seus IDs."),
+  executor_id: UserIdSchema.optional()
+    .describe("Novo responsável (UUID) para ESTA FASE específica. Opcional."),
+  effort_minutes: z.number().int().min(1).max(9999).optional()
+    .describe("Novo tempo estimado desta fase em minutos. Opcional."),
+  phase_start_date: DateSchema.optional()
+    .describe("Nova data de início desta fase (AAAA-MM-DD). Opcional."),
+  phase_due_date: DateSchema.optional()
+    .describe("Nova data de entrega desta fase (AAAA-MM-DD). Opcional."),
+}).strict().refine(
+  (d) =>
+    d.executor_id !== undefined ||
+    d.effort_minutes !== undefined ||
+    d.phase_start_date !== undefined ||
+    d.phase_due_date !== undefined,
+  { message: "Forneça pelo menos um campo (executor_id, effort_minutes, phase_start_date, phase_due_date) para atualizar." }
+);
+
+export type UpdatePhaseInput = z.infer<typeof UpdatePhaseSchema>;
 
 // ============ Complete Task ============
 

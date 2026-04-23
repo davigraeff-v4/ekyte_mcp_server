@@ -15,6 +15,7 @@ Toda a API usada é a **interna** (`https://api.ekyte.com/api/...`), autenticada
 | `ekyte_list_task_types` | Lista tipos de tarefa (template + workflow_id) |
 | `ekyte_list_phases` | Lista fases de um workflow (para descobrir `phase_id`) |
 | `ekyte_list_tasks` | Lista tarefas com filtros (workspace, status, datas, etc.) |
+| `ekyte_list_task_flow_phases` | Lista as fases de uma tarefa específica, com executor/datas/esforço POR FASE |
 | `ekyte_get_task` | Detalhes de uma tarefa específica |
 | `ekyte_list_time_entries` | Lista apontamentos de horas |
 
@@ -22,8 +23,9 @@ Toda a API usada é a **interna** (`https://api.ekyte.com/api/...`), autenticada
 
 | Tool | Descrição |
 |------|-----------|
-| `ekyte_create_task` | Cria nova tarefa |
-| `ekyte_update_task` | Edita tarefa existente (JSON Patch) |
+| `ekyte_create_task` | Cria nova tarefa (fase única ou **multi-fase**, com executor diferente por fase) |
+| `ekyte_update_task` | Edita campos top-level da tarefa (título, descrição, executor/fase atuais, prioridade) |
+| `ekyte_update_phase` | Edita uma FASE específica da tarefa (executor, esforço, datas) — sem alterar as outras fases |
 | `ekyte_complete_task` | Marca tarefa como concluída |
 | `ekyte_add_task_comment` | Adiciona comentário na timeline |
 | `ekyte_create_time_entry_with_task` | Aponta horas em tarefa específica |
@@ -32,11 +34,45 @@ Toda a API usada é a **interna** (`https://api.ekyte.com/api/...`), autenticada
 
 ## Fluxo recomendado para criar uma tarefa
 
-1. `ekyte_list_workspaces` → pegar `workspace_id`
-2. `ekyte_list_task_types` → pegar `task_type_id` (e o `workflow_id` associado)
-3. `ekyte_list_phases` com o `workflow_id` → pegar `phase_id` (normalmente a fase inicial)
-4. `ekyte_list_users` → pegar `executor_id` (UUID)
+### Fase única (simples)
+
+1. `ekyte_list_workspaces` → `workspace_id`
+2. `ekyte_list_task_types` → `task_type_id` (+ `workflow_id` associado)
+3. `ekyte_list_phases(workflow_id)` → `phase_id` inicial
+4. `ekyte_list_users` → `executor_id` (UUID)
 5. `ekyte_create_task` com os 4 IDs + datas + tempo estimado
+
+### Multi-fase (executor diferente por fase)
+
+1–3 iguais ao fluxo acima (listar workspaces, task types, phases)
+4. `ekyte_list_users` → descobrir UUIDs dos responsáveis
+5. `ekyte_create_task` passando o array `phases`:
+   ```json
+   {
+     "title": "Campanha X",
+     "workspace_id": 124458,
+     "task_type_id": 44873,
+     "phase_start_date": "2026-04-22",
+     "phase_due_date": "2026-04-30",
+     "phases": [
+       {"phase_id": 30759, "executor_id": "uuid-pietro", "effort_minutes": 60, "phase_due_date": "2026-04-24"},
+       {"phase_id": 37391, "executor_id": "uuid-edison", "effort_minutes": 90, "phase_due_date": "2026-04-27"},
+       {"phase_id": 30749, "executor_id": "uuid-paulo", "effort_minutes": 30, "phase_due_date": "2026-04-30"}
+     ]
+   }
+   ```
+   A tarefa começa na **primeira fase** da lista. Top-level (`executor_id`, `phase_id`) são ignorados.
+
+## Fluxo recomendado para editar uma tarefa
+
+### Editar campos gerais (fase atual, título, prioridade, etc.)
+- Use `ekyte_update_task`
+- Campos: `title`, `description`, `executor_id` (fase atual), `phase_id` (muda a fase ativa), `phase_start_date`, `phase_due_date`, `priority_group` (35=Baixa, 50=Média, 60=Alta, 90=Urgente)
+
+### Editar uma fase específica (não-atual) — trocar quem faz o quê
+1. `ekyte_list_task_flow_phases(task_id)` → ver todas as fases e seus `phase_id`
+2. `ekyte_update_phase(task_id, phase_id, executor_id=..., effort_minutes=..., phase_start_date=..., phase_due_date=...)`
+- Ex: "mudar o responsável pela fase Execução da tarefa #123" sem mexer nas outras
 
 ## Configuração
 
@@ -182,8 +218,10 @@ Todos com `Authorization: Bearer <jwt>` e base `https://api.ekyte.com`:
 | GET | `/api/companies/{id}/workflows/{wf}` | list_phases (retorna `phases[]`) |
 | GET | `/api/v2/companies/{id}/ctc-tasks` | list_tasks |
 | GET | `/api/v2/companies/{id}/ctc-tasks/{task}` | get_task |
-| POST | `/api/companies/{id}/ctc-tasks` | create_task |
+| GET | `/api/v2/companies/{id}/ctc-tasks/{task}/flow-phases` | list_task_flow_phases |
+| POST | `/api/companies/{id}/ctc-tasks` | create_task (suporta `flow[]` multi-fase) |
 | PATCH | `/api/v2/companies/{id}/ctc-tasks/{task}` | update_task / complete_task |
+| PATCH | `/api/v2/companies/{id}/ctc-tasks/{task}/flow-phase/{phase}` | update_phase |
 | POST | `/api/v2/companies/{id}/ctc-tasks/{task}/comments` | add_task_comment |
 | GET | `/api/companies/{id}/time-trackings/data/details` | list_time_entries |
 | POST | `/api/companies/{id}/workspaces/{ws}/time-trackings` | create_time_entry_* |
