@@ -37,6 +37,20 @@ Sao **16 tools** — 8 de leitura, 8 de escrita.
 > - Se o usuario escolher **A (Local)**: execute os Passos 1 → 2 → 3 → 4 → 5
 > - Se o usuario escolher **B (Remoto)**: execute os Passos 1 → 2 → 3
 
+## SEGUNDA PERGUNTA: Escopo da instalacao
+
+> 🔴 **Apos o usuario escolher o modo (Local ou Remoto), pergunte:**
+>
+> **"Quer instalar globalmente (disponivel em qualquer projeto) ou apenas neste repositorio?"**
+>
+> | Escopo | O que faz | Onde salva |
+> |--------|-----------|------------|
+> | **Global** | MCP disponivel em qualquer projeto do Claude Code | Configuracao do usuario (`-s user`) |
+> | **Projeto** | MCP disponivel apenas neste repositorio | Arquivo `.mcp.json` na raiz do projeto |
+>
+> A resposta do usuario define como o Passo 3 (Local) ou Passo 1 (Remoto) sera executado.
+> Guarde a escolha para usar na hora do registro.
+
 ---
 
 ## Caminho A: Instalacao Local
@@ -105,12 +119,39 @@ ls dist/index.js
 
 ### 3. Registrar o MCP no Claude Code
 
+**Se o usuario escolheu escopo Global:**
+
 ```bash
 claude mcp add ekyte -s user -e EKYTE_BEARER_TOKEN=SEU_JWT_AQUI -e EKYTE_COMPANY_ID=SEU_COMPANY_ID -e TRANSPORT=stdio -- node /CAMINHO/COMPLETO/PARA/ekyte_mcp_server/dist/index.js
 ```
 
 > **Dica:** Use `pwd` dentro da pasta do projeto para descobrir o caminho absoluto. O flag `-s user` registra o MCP globalmente — disponivel em qualquer projeto.
 > **Se o `.env` ja tem as credenciais**, use os valores de la automaticamente — nao peca ao usuario para colar de novo.
+
+**Se o usuario escolheu escopo Projeto:**
+
+Crie (ou atualize) o arquivo `.mcp.json` na raiz do repositorio onde o usuario quer usar o MCP:
+
+```json
+{
+  "mcpServers": {
+    "ekyte": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/CAMINHO/COMPLETO/PARA/ekyte_mcp_server/dist/index.js"],
+      "env": {
+        "EKYTE_BEARER_TOKEN": "SEU_JWT_AQUI",
+        "EKYTE_COMPANY_ID": "SEU_COMPANY_ID",
+        "TRANSPORT": "stdio"
+      }
+    }
+  }
+}
+```
+
+> **Dica:** Use `pwd` dentro da pasta do projeto MCP para descobrir o caminho absoluto para `args`.
+> **Se o `.env` ja tem as credenciais**, use os valores de la automaticamente — nao peca ao usuario para colar de novo.
+> **O `.mcp.json` ja esta no `.gitignore`** deste repositorio. Se for instalar em outro repo, lembre de adicionar `.mcp.json` ao `.gitignore` de la tambem (contem credenciais sensíveis).
 
 ---
 
@@ -151,7 +192,8 @@ Se retornar erro 500 → problema temporario no Ekyte, tente em alguns minutos.
 - [ ] Bearer Token (JWT) obtido do DevTools ou `.env`
 - [ ] Company ID identificado ou lido do `.env`
 - [ ] Build realizado (`dist/index.js` existe)
-- [ ] `claude mcp add` (stdio) executado com sucesso
+- [ ] Escopo definido (Global ou Projeto)
+- [ ] **Global:** `claude mcp add` (stdio) executado com sucesso / **Projeto:** `.mcp.json` criado na raiz do repo
 - [ ] `claude mcp list` mostra `ekyte`
 - [ ] Smoke test passou — `list_workspaces` retorna dados reais
 
@@ -161,9 +203,28 @@ Se retornar erro 500 → problema temporario no Ekyte, tente em alguns minutos.
 
 ### 1. Registrar o MCP no Claude Code
 
+**Se o usuario escolheu escopo Global:**
+
 ```bash
 claude mcp add --transport http ekyte https://SEU-SERVIDOR.com/mcp --scope user
 ```
+
+**Se o usuario escolheu escopo Projeto:**
+
+Crie (ou atualize) o arquivo `.mcp.json` na raiz do repositorio onde o usuario quer usar o MCP:
+
+```json
+{
+  "mcpServers": {
+    "ekyte": {
+      "type": "http",
+      "url": "https://SEU-SERVIDOR.com/mcp"
+    }
+  }
+}
+```
+
+> **Dica:** Se o repositorio nao tem `.mcp.json` no `.gitignore`, adicione — no caso remoto nao ha credenciais sensiveis no arquivo, mas e boa pratica.
 
 > **Vantagem:** Nao precisa de Node.js local, nao precisa buildar, nao precisa de credenciais na sua maquina. O servidor remoto ja tem tudo configurado.
 
@@ -203,7 +264,8 @@ Se retornar erro 500 → problema temporario no Ekyte, tente em alguns minutos.
 ### Checklist Remoto
 
 - [ ] URL do servidor MCP obtida
-- [ ] `claude mcp add` (http) executado com sucesso
+- [ ] Escopo definido (Global ou Projeto)
+- [ ] **Global:** `claude mcp add` (http) executado com sucesso / **Projeto:** `.mcp.json` criado na raiz do repo
 - [ ] `claude mcp list` mostra `ekyte`
 - [ ] Smoke test passou — `list_workspaces` retorna dados reais
 
@@ -213,14 +275,16 @@ Se retornar erro 500 → problema temporario no Ekyte, tente em alguns minutos.
 
 ### "ERRO: Variaveis de ambiente obrigatorias nao definidas" (local)
 
-O servidor precisa de `EKYTE_BEARER_TOKEN` e `EKYTE_COMPANY_ID`. Verifique se passou os `-e` corretos no `claude mcp add`.
+O servidor precisa de `EKYTE_BEARER_TOKEN` e `EKYTE_COMPANY_ID`. Verifique se passou os `-e` corretos no `claude mcp add` ou se o `.mcp.json` tem os valores no campo `env`.
 
-Para corrigir, remova e adicione novamente:
+**Se instalou com escopo Global**, remova e adicione novamente:
 
 ```bash
 claude mcp remove ekyte -s user
 claude mcp add ekyte -s user -e EKYTE_BEARER_TOKEN=TOKEN_CORRETO -e EKYTE_COMPANY_ID=ID_CORRETO -e TRANSPORT=stdio -- node /caminho/dist/index.js
 ```
+
+**Se instalou com escopo Projeto**, edite o `.mcp.json` na raiz do repo e corrija os valores em `env`.
 
 ### Erro 401 (Unauthorized)
 
@@ -234,7 +298,8 @@ Problema temporario no servidor do Ekyte. Aguarde 2-3 minutos e tente novamente.
 
 1. **Local:** Verifique se o path do `dist/index.js` esta absoluto e correto
 2. **Remoto:** Verifique se a URL termina em `/mcp` e o servidor esta acessivel
-3. Tente remover e adicionar novamente
+3. **Projeto (`.mcp.json`):** Verifique se voce esta na raiz do repositorio onde o `.mcp.json` foi criado — ele so funciona naquele diretorio
+4. Tente remover e adicionar novamente (global) ou recriar o `.mcp.json` (projeto)
 
 ### Build falha (local)
 
