@@ -111,10 +111,7 @@ export const CreateTaskSchema = z.object({
     .describe("Prioridade (0-1000). Ex: 100=Baixa, 300=Média, 500=Alta. Opcional."),
   phases: z.array(TaskPhaseFlowItemSchema).min(1).optional()
     .describe("MULTI-FASE: lista de fases com executores distintos. Quando fornecido, executor_id/phase_id de cima são IGNORADOS — a tarefa começa na primeira fase da lista. Use para criar tarefas com pessoas diferentes em cada etapa do fluxo."),
-}).strict().refine(
-  (d) => (d.phases && d.phases.length >= 1) || (!!d.executor_id && !!d.phase_id),
-  { message: "Forneça 'phases[]' (multi-fase) OU ambos 'executor_id' + 'phase_id' (fase única)." }
-);
+}).strict();
 
 export type CreateTaskInput = z.infer<typeof CreateTaskSchema>;
 
@@ -152,6 +149,8 @@ export type ListUsersInput = z.infer<typeof ListUsersSchema>;
 
 export const UpdateTaskSchema = z.object({
   task_id: TaskIdSchema,
+  project_id: z.number().int().positive().optional()
+    .describe("ID do projeto (necessário APENAS se for uma tarefa de projeto). Tarefas avulsas não precisam disso."),
   title: z.string()
     .min(1).max(500)
     .optional()
@@ -178,15 +177,7 @@ export const UpdateTaskSchema = z.object({
   priority: z.number().int().min(0).max(1000)
     .optional()
     .describe("Prioridade numérica bruta (0-1000). Normalmente você quer priority_group em vez disso. Opcional."),
-}).strict().refine(
-  (data) => {
-    return data.title !== undefined || data.description !== undefined ||
-      data.executor_id !== undefined || data.phase_id !== undefined ||
-      data.phase_start_date !== undefined || data.phase_due_date !== undefined ||
-      data.priority !== undefined || data.priority_group !== undefined;
-  },
-  { message: "Pelo menos um campo deve ser informado para atualização." }
-);
+}).strict();
 
 export type UpdateTaskInput = z.infer<typeof UpdateTaskSchema>;
 
@@ -194,6 +185,8 @@ export type UpdateTaskInput = z.infer<typeof UpdateTaskSchema>;
 
 export const ListTaskFlowPhasesSchema = z.object({
   task_id: TaskIdSchema,
+  project_id: z.number().int().positive().optional()
+    .describe("ID do projeto (necessário se for uma tarefa de projeto). Tarefas avulsas não precisam."),
   response_format: z.nativeEnum(ResponseFormat)
     .default(ResponseFormat.MARKDOWN)
     .describe("Formato de saída"),
@@ -205,6 +198,8 @@ export type ListTaskFlowPhasesInput = z.infer<typeof ListTaskFlowPhasesSchema>;
 
 export const UpdatePhaseSchema = z.object({
   task_id: TaskIdSchema,
+  project_id: z.number().int().positive().optional()
+    .describe("ID do projeto (necessário APENAS se for uma tarefa de projeto). Tarefas avulsas não precisam disso."),
   phase_id: z.number().int().positive()
     .describe("ID da fase a atualizar dentro desta tarefa. Use ekyte_list_task_flow_phases para ver as fases e seus IDs."),
   executor_id: UserIdSchema.optional()
@@ -215,16 +210,25 @@ export const UpdatePhaseSchema = z.object({
     .describe("Nova data de início desta fase (AAAA-MM-DD). Opcional."),
   phase_due_date: DateSchema.optional()
     .describe("Nova data de entrega desta fase (AAAA-MM-DD). Opcional."),
-}).strict().refine(
-  (d) =>
-    d.executor_id !== undefined ||
-    d.effort_minutes !== undefined ||
-    d.phase_start_date !== undefined ||
-    d.phase_due_date !== undefined,
-  { message: "Forneça pelo menos um campo (executor_id, effort_minutes, phase_start_date, phase_due_date) para atualizar." }
-);
+}).strict();
 
 export type UpdatePhaseInput = z.infer<typeof UpdatePhaseSchema>;
+
+// ============ Toggle (Add/Remove) Flow Phase of a Task ============
+
+export const ToggleFlowPhaseSchema = z.object({
+  task_id: TaskIdSchema,
+  project_id: z.number().int().positive()
+    .describe("ID do projeto. Obrigatório — esta operação só funciona para tarefas de projeto."),
+  phase_id: z.number().int().positive()
+    .describe("ID da fase (phaseId) a ativar ou desativar. Use ekyte_list_task_flow_phases para listar as fases e seus IDs."),
+  active: z.number().int().min(0).max(1)
+    .describe("1 = ATIVAR a fase (adicionar ao fluxo). 0 = DESATIVAR a fase (remover do fluxo)."),
+  executor_id: UserIdSchema.optional()
+    .describe("UUID do executor para esta fase. Opcional ao desativar, recomendado ao ativar."),
+}).strict();
+
+export type ToggleFlowPhaseInput = z.infer<typeof ToggleFlowPhaseSchema>;
 
 // ============ Complete Task ============
 

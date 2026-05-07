@@ -12,6 +12,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   apiPost,
   apiPatch,
+  apiPut,
   apiGet,
   companyUrl,
   companyV2Url,
@@ -28,20 +29,24 @@ import {
   type ListTimeEntriesInput,
   type DeleteTimeEntryInput,
 } from "../schemas/time-entry.js";
+import { CreateProjectSchema, type CreateProjectInput } from "../schemas/project.js";
 import {
   CreateTaskSchema,
   UpdateTaskSchema,
   CompleteTaskSchema,
   AddTaskCommentSchema,
   UpdatePhaseSchema,
+  ToggleFlowPhaseSchema,
   type CreateTaskInput,
   type UpdateTaskInput,
   type CompleteTaskInput,
   type AddTaskCommentInput,
   type UpdatePhaseInput,
+  type ToggleFlowPhaseInput,
   type TaskPhaseFlowItem,
 } from "../schemas/task.js";
-import { CHARACTER_LIMIT } from "../constants.js";
+import { CHARACTER_LIMIT, TASK_STATUS_LABELS } from "../constants.js";
+import type { EkyteTask } from "../types.js";
 
 // ============ Helper: Calculate effort in minutes ============
 
@@ -498,6 +503,10 @@ IMPORTANTE: Sempre confirme TODOS os dados com o usuário antes de criar.`,
 
         const isMultiPhase = Array.isArray(params.phases) && params.phases.length >= 1;
 
+        if (!isMultiPhase && (!params.executor_id || !params.phase_id)) {
+          return { content: [{ type: "text" as const, text: "Erro: Forneça 'phases[]' (multi-fase) OU ambos 'executor_id' + 'phase_id' (fase única)." }] };
+        }
+
         // Build flow[] and determine top-level fields
         let flow: Array<Record<string, unknown>>;
         let topLevelExecutorId: string;
@@ -654,6 +663,15 @@ IMPORTANTE: Sempre confirme as alterações com o usuário antes de executar.`,
     },
     async (params: UpdateTaskInput) => {
       try {
+        if (
+          params.title === undefined && params.description === undefined &&
+          params.executor_id === undefined && params.phase_id === undefined &&
+          params.phase_start_date === undefined && params.phase_due_date === undefined &&
+          params.priority === undefined && params.priority_group === undefined
+        ) {
+          return { content: [{ type: "text" as const, text: "Erro: Pelo menos um campo deve ser informado para atualização." }] };
+        }
+
         const patchOps: Array<{ op: string; path: string; value: unknown }> = [];
 
         if (params.title !== undefined) {
@@ -682,23 +700,48 @@ IMPORTANTE: Sempre confirme as alterações com o usuário antes de executar.`,
           patchOps.push({ op: "replace", path: "/priority", value: params.priority });
         }
 
+        const basePath = params.project_id ? `projects/${params.project_id}/tasks/${params.task_id}` : `ctc-tasks/${params.task_id}`;
+
         await apiPatch(
-          companyV2Url(`ctc-tasks/${params.task_id}`),
+          companyV2Url(basePath),
           patchOps,
           { type: "list", updateAllTickets: "undefined" }
         );
 
-        const changes = patchOps.map((op) => `- **${op.path.replace("/", "")}**: ${op.value}`).join("\n");
+        // Fetch updated task to return full data
+        const task = await apiGet<EkyteTask>(companyV2Url(basePath));
+        
+        const formatMinutes = (mins: number): string => {
+          const h = Math.floor(mins / 60);
+          const m = mins % 60;
+          return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
+        };
+
+        const statusLabel = task?.situation !== undefined ? (TASK_STATUS_LABELS[task.situation] ?? `Desconhecido (${task.situation})`) : "Desconhecido";
+
+        const markdown = [
+          `# ✅ Tarefa #${params.task_id} Atualizada com Sucesso!`,
+          "",
+          task?.description ? `> ${task.description.replace(/<[^>]+>/g, "")}` : "",
+          "",
+          `- **Título**: ${task?.title || "-"}`,
+          `- **Status**: ${statusLabel}`,
+          `- **Workspace**: ${task?.workspace?.name || "-"} (ID: ${task?.workspaceId || "-"})`,
+          `- **Tipo**: ${task?.ctcTaskType?.name || "-"} (ID: ${task?.ctcTaskTypeId || "-"})`,
+          `- **Phase ID**: ${task?.phaseId || "-"}`,
+          `- **Responsável**: ${task?.executor?.userName || "-"}`,
+          "",
+          "### Datas",
+          `- Início etapa: ${task?.phaseStartDate?.split("T")[0] || "-"}`,
+          `- Entrega atual: ${task?.currentDueDate?.split("T")[0] || "-"}`,
+          "",
+          "### Tempo",
+          `- Estimado: ${task?.estimatedTime ? formatMinutes(task.estimatedTime) : "-"}`,
+          `- Real: ${task?.actualTime ? formatMinutes(task.actualTime) : "-"}`,
+        ].filter(Boolean).join("\n");
 
         return {
-          content: [{ type: "text" as const, text: [
-            "# ✅ Tarefa Atualizada com Sucesso!",
-            "",
-            `**Tarefa**: #${params.task_id}`,
-            "",
-            "### Alterações aplicadas:",
-            changes,
-          ].join("\n") }],
+          content: [{ type: "text" as const, text: markdown }],
         };
       } catch (error) {
         return { content: [{ type: "text" as const, text: handleApiError(error) }] };
@@ -736,6 +779,15 @@ IMPORTANTE: Confirme as alterações com o usuário antes de executar.`,
     },
     async (params: UpdatePhaseInput) => {
       try {
+        if (
+          params.executor_id === undefined &&
+          params.effort_minutes === undefined &&
+          params.phase_start_date === undefined &&
+          params.phase_due_date === undefined
+        ) {
+          return { content: [{ type: "text" as const, text: "Erro: Forneça pelo menos um campo (executor_id, effort_minutes, phase_start_date, phase_due_date) para atualizar a fase." }] };
+        }
+
         const patchOps: Array<{ op: string; path: string; value: unknown }> = [];
 
         if (params.executor_id !== undefined) {
@@ -751,8 +803,10 @@ IMPORTANTE: Confirme as alterações com o usuário antes de executar.`,
           patchOps.push({ op: "replace", path: "/phaseDueDate", value: `${params.phase_due_date}T00:00:00` });
         }
 
+        const basePath = params.project_id ? `projects/${params.project_id}/tasks/${params.task_id}` : `ctc-tasks/${params.task_id}`;
+
         await apiPatch(
-          companyV2Url(`ctc-tasks/${params.task_id}/flow-phase/${params.phase_id}`),
+          companyV2Url(`${basePath}/flow-phase/${params.phase_id}`),
           patchOps,
           { type: "list" }
         );
@@ -775,6 +829,176 @@ IMPORTANTE: Confirme as alterações com o usuário antes de executar.`,
       }
     }
   );
+
+  // -------- Toggle (Add/Remove) Flow Phase --------
+  server.registerTool(
+    "ekyte_toggle_flow_phase",
+    {
+      title: "Ativar ou Desativar Fase de uma Tarefa de Projeto",
+      description: `Ativa (adiciona) ou desativa (remove) uma fase no fluxo de uma tarefa de projeto.
+
+Use ekyte_list_task_flow_phases PRIMEIRO para ver todas as fases disponíveis (ativas e inativas) e seus IDs.
+
+Parâmetros:
+- task_id: ID da tarefa
+- project_id: ID do projeto (OBRIGATÓRIO)
+- phase_id: ID da fase (phaseId) a ativar/desativar
+- active: 1 = ATIVAR (adicionar), 0 = DESATIVAR (remover)
+- executor_id: UUID do executor (opcional ao desativar, recomendado ao ativar)
+
+FUNCIONAMENTO: Busca o estado atual da tarefa, modifica o campo 'active' da fase desejada e envia o array completo via PUT.`,
+      inputSchema: ToggleFlowPhaseSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (params: ToggleFlowPhaseInput) => {
+      try {
+        // 1. GET the full task object
+        const taskData = await apiGet<Record<string, unknown>>(
+          companyV2Url(`projects/${params.project_id}/tasks/${params.task_id}`)
+        );
+
+        const flow = taskData?.flow as Record<string, unknown>[] | undefined;
+        if (!flow || !Array.isArray(flow)) {
+          return { content: [{ type: "text" as const, text: "Erro: Não foi possível obter o fluxo de fases desta tarefa." }] };
+        }
+
+        // 2. Find the phase and toggle active
+        let found = false;
+        let phaseName = "";
+        const updatedFlow = flow.map((phase) => {
+          if (phase.phaseId === params.phase_id) {
+            found = true;
+            phaseName = ((phase.phase as Record<string, unknown>)?.name as string) ?? String(params.phase_id);
+            const updated: Record<string, unknown> = { ...phase, active: params.active };
+            if (params.executor_id) {
+              updated.executorId = params.executor_id;
+            }
+            return updated;
+          }
+          return phase;
+        });
+
+        if (!found && params.active === 1) {
+          // Phase was previously removed — re-add it to the flow
+          phaseName = `Phase ${params.phase_id}`;
+          const taskTypeId = (flow[0]?.taskTypeId as number) ?? 0;
+          updatedFlow.push({
+            sequential: updatedFlow.length + 1,
+            taskTypeId,
+            active: 1,
+            ctcTaskProjectTaskId: params.task_id,
+            daysToStart: 0,
+            duration: 0,
+            effort: 60,
+            executorId: params.executor_id ?? "",
+            phaseId: params.phase_id,
+            coPhaseId: null,
+            phase: { id: params.phase_id, name: phaseName, sequential: updatedFlow.length + 1 },
+          });
+          found = true;
+        }
+
+        if (!found) {
+          return { content: [{ type: "text" as const, text: `Erro: Fase com phaseId=${params.phase_id} não encontrada no fluxo desta tarefa. Use ekyte_list_task_flow_phases para ver os IDs disponíveis.` }] };
+        }
+
+        // 3. Build the flowPhases array (clean format for PUT)
+        const flowPhases = updatedFlow.map((p) => ({
+          sequential: p.sequential,
+          taskTypeId: p.taskTypeId,
+          active: p.active,
+          ctcTaskProjectTaskId: p.ctcTaskProjectTaskId ?? params.task_id,
+          daysToStart: p.daysToStart ?? 0,
+          duration: p.duration ?? 0,
+          effort: p.effort ?? 0,
+          executorId: p.executorId,
+          phaseId: p.phaseId,
+          coPhaseId: p.coPhaseId ?? null,
+        }));
+
+        // 4. Compute effort formatting
+        const totalEffort = (taskData.effort as number) ?? 0;
+        const effortH = Math.floor(totalEffort / 60);
+        const effortM = totalEffort % 60;
+
+        // 5. Build the FULL PUT body (exactly as the Ekyte frontend sends it)
+        const putBody: Record<string, unknown> = {
+          id: taskData.id,
+          title: taskData.title,
+          description: taskData.description ?? "",
+          ctcTaskTypeId: taskData.ctcTaskTypeId,
+          ctcTaskType: taskData.ctcTaskType,
+          ctcTaskProjectId: taskData.ctcTaskProjectId ?? params.project_id,
+          ctcTaskProject: taskData.ctcTaskProject,
+          ctcTaskProjectPhaseId: taskData.ctcTaskProjectPhaseId,
+          ctcTaskProjectPhase: taskData.ctcTaskProjectPhase,
+          ctcTaskProjectChecklists: taskData.ctcTaskProjectChecklists ?? [],
+          effort: totalEffort,
+          effortFormated: `${String(effortH).padStart(2, "0")}:${String(effortM).padStart(2, "0")}`,
+          effortHour: String(effortH).padStart(2, "0"),
+          effortMinute: String(effortM).padStart(2, "0"),
+          daysToStart: taskData.daysToStart ?? 0,
+          daysToComplete: taskData.daysToComplete ?? 0,
+          dueDate: "",
+          priority: taskData.priority ?? 10,
+          priorityGroup: taskData.priorityGroup ?? 0,
+          sequential: taskData.sequential ?? 0,
+          quantity: taskData.quantity ?? 0,
+          allocationType: taskData.allocationType ?? 20,
+          flowAutoAdjust: taskData.flowAutoAdjust ?? 1,
+          addTaskTypeChecklists: taskData.addTaskTypeChecklists ?? 1,
+          recurring: taskData.recurring ?? 0,
+          recurringFrequency: taskData.recurringFrequency ?? 0,
+          recurringLimit: taskData.recurringLimit ?? 0,
+          recurringMonthOption: taskData.recurringMonthOption ?? 0,
+          recurringDays: taskData.recurringDays ?? null,
+          predecessorId: taskData.predecessorId ?? null,
+          predecessor: taskData.predecessor ?? null,
+          ctcTaskPredecessorId: taskData.ctcTaskPredecessorId ?? null,
+          ctcTaskPredecessor: taskData.ctcTaskPredecessor ?? null,
+          placementStartDays: taskData.placementStartDays ?? null,
+          placementEndDays: taskData.placementEndDays ?? null,
+          placementStartTime: taskData.placementStartTime ?? null,
+          placementEndTime: taskData.placementEndTime ?? null,
+          setPlacementEndDays: taskData.setPlacementEndDays ?? false,
+          tags: taskData.tags ?? [],
+          medias: taskData.medias ?? [],
+          channels: taskData.channels ?? [],
+          artifacts: taskData.artifacts ?? [],
+          flow: updatedFlow,
+          flowPhases,
+        };
+
+        // 6. PUT the full updated task
+        await apiPut(
+          companyV2Url(`projects/${params.project_id}/tasks/${params.task_id}`),
+          putBody
+        );
+
+        const action = params.active === 1 ? "ATIVADA" : "DESATIVADA";
+
+        return {
+          content: [{ type: "text" as const, text: [
+            `# ✅ Fase ${action} com Sucesso!`,
+            "",
+            `**Tarefa**: #${params.task_id} — ${taskData.title}`,
+            `**Projeto**: #${params.project_id}`,
+            `**Fase**: ${phaseName} (ID: ${params.phase_id})`,
+            `**Status**: ${params.active === 1 ? "Ativa ✅" : "Inativa ❌"}`,
+            params.executor_id ? `**Executor**: ${params.executor_id}` : "",
+          ].filter(Boolean).join("\n") }],
+        };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
+      }
+    }
+  );
+
 
   // -------- Complete Task --------
   server.registerTool(
@@ -862,6 +1086,63 @@ O comentário será adicionado como uma nova mensagem na timeline da tarefa, vis
             `- **Tarefa**: #${params.task_id}`,
             `- **Comentário**: ${params.comment}`,
           ].join("\n") }],
+        };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
+      }
+    }
+  );
+  // -------- Create Project --------
+  server.registerTool(
+    "ekyte_create_project",
+    {
+      title: "Criar Projeto no Ekyte",
+      description: `Cria um novo projeto no Ekyte baseado nos parâmetros e num payload adicional dinâmico.`,
+      inputSchema: CreateProjectSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (params: CreateProjectInput) => {
+      try {
+        const endpoint = params.endpoint_override || "projects";
+        
+        // Base payload
+        const payload: Record<string, unknown> = {
+          name: params.name,
+          workspaceId: params.workspaceId,
+        };
+
+        if (params.templateId) payload.templateId = params.templateId;
+        if (params.startDate) payload.startDate = params.startDate;
+        if (params.endDate) payload.endDate = params.endDate;
+
+        // Merge any additional fields passed by the user (reverse engineered from DevTools)
+        if (params.additional_payload) {
+          Object.assign(payload, params.additional_payload);
+        }
+
+        const data = await apiPost<Record<string, unknown>>(companyUrl(endpoint), payload);
+        const newId = data?.id ?? "desconhecido";
+
+        const markdown = [
+          `# Projeto Criado com Sucesso!`,
+          "",
+          `- **ID**: ${newId}`,
+          `- **Nome**: ${params.name}`,
+          `- **Workspace**: ${params.workspaceId}`,
+        ].join("\n");
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: formatResponse(data, markdown, ResponseFormat.MARKDOWN),
+            },
+          ],
         };
       } catch (error) {
         return { content: [{ type: "text" as const, text: handleApiError(error) }] };

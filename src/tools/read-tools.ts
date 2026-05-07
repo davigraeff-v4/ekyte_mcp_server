@@ -26,6 +26,14 @@ import {
   type ListTaskFlowPhasesInput,
 } from "../schemas/task.js";
 import type { EkyteWorkspace, EkyteUser, EkyteTaskType, EkyteTask } from "../types.js";
+import {
+  ListProjectsSchema,
+  ListProjectTemplatesSchema,
+  ListProjectTasksSchema,
+  type ListProjectsInput,
+  type ListProjectTemplatesInput,
+  type ListProjectTasksInput,
+} from "../schemas/project.js";
 
 // ============ Helpers ============
 
@@ -537,11 +545,22 @@ Retorna para cada fase: phase_id, sequential, nome, executor (UUID + nome), effo
     },
     async (params: ListTaskFlowPhasesInput) => {
       try {
-        const data = await apiGet<Record<string, unknown>[]>(
-          companyV2Url(`ctc-tasks/${params.task_id}/flow-phases`)
-        );
+        let phases: Record<string, unknown>[] = [];
+        
+        if (params.project_id) {
+          // Project tasks don't have a /flow-phases endpoint. We must fetch the task and extract .flow
+          const taskData = await apiGet<Record<string, unknown>>(
+            companyV2Url(`projects/${params.project_id}/tasks/${params.task_id}`)
+          );
+          phases = Array.isArray(taskData?.flow) ? taskData.flow : [];
+        } else {
+          // Regular tasks
+          const data = await apiGet<Record<string, unknown>[]>(
+            companyV2Url(`ctc-tasks/${params.task_id}/flow-phases`)
+          );
+          phases = Array.isArray(data) ? data : [];
+        }
 
-        const phases = Array.isArray(data) ? data : [];
         if (phases.length === 0) {
           return { content: [{ type: "text" as const, text: `Nenhuma fase encontrada para a tarefa #${params.task_id}.` }] };
         }
@@ -688,6 +707,220 @@ Retorna: título, descrição, status, responsável, workspace, tipo, datas, tem
         return {
           content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }],
         };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
+      }
+    }
+  );
+  // -------- List Projects --------
+  server.registerTool(
+    "ekyte_list_projects",
+    {
+      title: "Listar Projetos do Ekyte",
+      description: `Lista projetos da empresa no Ekyte.
+Use is_planning=1 para buscar projetos que estão com tarefas planejadas mas não ativas ainda.
+Você pode sobrescrever o endpoint caso a API utilize um caminho diferente de 'projects' (ex: 'ctc-projects').`,
+      inputSchema: ListProjectsSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (params: ListProjectsInput) => {
+      try {
+        const endpoint = params.endpoint_override || "projects";
+        const queryParams: Record<string, unknown> = { limit: PAGE_SIZE * 2 };
+        
+        if (params.workspace_id !== undefined) queryParams.workspaceId = params.workspace_id;
+        if (params.status !== undefined) queryParams.situation = params.status;
+        if (params.is_planning !== undefined) queryParams.isPlanning = params.is_planning;
+
+        const data = await apiGet<Record<string, unknown>[]>(companyV2Url(endpoint), queryParams);
+        const all = Array.isArray(data) ? data : [];
+
+        let filtered = all;
+        if (params.search) {
+          filtered = filtered.filter((p) => matchSearch(String(p.name || p.title || ""), params.search!));
+        }
+
+        if (filtered.length === 0) {
+          return { content: [{ type: "text" as const, text: "Nenhum projeto encontrado." }] };
+        }
+
+        const { slice, total, page, totalPages, hasMore, nextPage } = paginate(filtered, params.page);
+
+        const output = {
+          total_fetched: all.length,
+          filtered_total: total,
+          page,
+          total_pages: totalPages,
+          items: slice.map((p) => ({
+            id: p.id,
+            name: p.name || p.title || "-",
+            situation: p.situation,
+            is_planning: p.isPlanning,
+            workspace_id: p.workspaceId,
+          })),
+          has_more: hasMore,
+          next_page: nextPage,
+        };
+
+        const markdown = [
+          "# Projetos do Ekyte",
+          "",
+          `Total carregado: ${all.length}`,
+          `Página ${page}/${totalPages} — ${slice.length} de ${total} resultado(s)`,
+          "",
+          "| ID | Nome | Status | Planejado? | Workspace ID |",
+          "|----|------|--------|------------|--------------|",
+          ...output.items.map((p) => `| ${p.id} | ${p.name} | ${p.situation} | ${p.is_planning === 1 ? "Sim" : "Não"} | ${p.workspace_id || "-"} |`),
+          "",
+          hasMore ? `➡️ Mais resultados na página ${nextPage}` : "✅ Fim dos resultados.",
+        ].join("\n");
+
+        return { content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }] };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
+      }
+    }
+  );
+
+  // -------- List Project Templates --------
+  server.registerTool(
+    "ekyte_list_project_templates",
+    {
+      title: "Listar Modelos de Projetos",
+      description: `Lista modelos (templates) de projetos disponíveis para criar novos projetos.`,
+      inputSchema: ListProjectTemplatesSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (params: ListProjectTemplatesInput) => {
+      try {
+        const endpoint = params.endpoint_override || "projects";
+        const queryParams: Record<string, unknown> = { isModel: 1, limit: PAGE_SIZE * 2 };
+
+        const data = await apiGet<Record<string, unknown>[]>(companyV2Url(endpoint), queryParams);
+        const all = Array.isArray(data) ? data : [];
+
+        let filtered = all;
+        if (params.search) {
+          filtered = filtered.filter((p) => matchSearch(String(p.name || p.title || ""), params.search!));
+        }
+
+        if (filtered.length === 0) {
+          return { content: [{ type: "text" as const, text: "Nenhum modelo de projeto encontrado." }] };
+        }
+
+        const { slice, total, page, totalPages, hasMore, nextPage } = paginate(filtered, params.page);
+
+        const output = {
+          total_fetched: all.length,
+          filtered_total: total,
+          page,
+          total_pages: totalPages,
+          items: slice.map((p) => ({
+            id: p.id,
+            name: p.name || p.title || "-",
+            description: p.description || "-",
+          })),
+          has_more: hasMore,
+          next_page: nextPage,
+        };
+
+        const markdown = [
+          "# Modelos de Projetos do Ekyte",
+          "",
+          `Total carregado: ${all.length}`,
+          `Página ${page}/${totalPages} — ${slice.length} de ${total} resultado(s)`,
+          "",
+          "| ID | Nome | Descrição |",
+          "|----|------|-----------|",
+          ...output.items.map((p) => `| ${p.id} | ${p.name} | ${p.description} |`),
+          "",
+          hasMore ? `➡️ Mais resultados na página ${nextPage}` : "✅ Fim dos resultados.",
+        ].join("\n");
+
+        return { content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }] };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: handleApiError(error) }] };
+      }
+    }
+  );
+
+  // -------- List Project Tasks --------
+  server.registerTool(
+    "ekyte_list_project_tasks",
+    {
+      title: "Listar Tarefas de um Projeto",
+      description: `Lista as tarefas associadas a um projeto específico.
+Excelente para verificar se existem "tarefas planejadas mas não ativas" dentro de um projeto.`,
+      inputSchema: ListProjectTasksSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (params: ListProjectTasksInput) => {
+      try {
+        const queryParams: Record<string, unknown> = { limit: TASKS_FETCH_LIMIT };
+        if (params.status !== undefined) queryParams.situation = params.status;
+
+        const data = await apiGet<Record<string, unknown>[]>(companyV2Url(`projects/${params.project_id}/tasks`), queryParams);
+        const all = Array.isArray(data) ? data : [];
+
+        let filtered = all;
+        if (params.search) {
+          filtered = filtered.filter((t) => matchSearch(String(t.title || ""), params.search!));
+        }
+
+        if (filtered.length === 0) {
+          return { content: [{ type: "text" as const, text: `Nenhuma tarefa encontrada para o projeto #${params.project_id}.` }] };
+        }
+
+        const { slice, total, page, totalPages, hasMore, nextPage } = paginate(filtered, params.page);
+
+        const output = {
+          project_id: params.project_id,
+          total_fetched: all.length,
+          filtered_total: total,
+          page,
+          total_pages: totalPages,
+          items: slice.map((t) => ({
+            id: t.id,
+            title: t.title || "-",
+            situation: t.situation,
+            taskSituation: t.taskSituation,
+            executor_id: t.executorId || (t.executor as any)?.id || "-",
+            executor_name: (t.executor as any)?.userName || "-",
+            estimated_time: t.effort || 0,
+          })),
+          has_more: hasMore,
+          next_page: nextPage,
+        };
+
+        const markdown = [
+          `# Tarefas do Projeto #${params.project_id}`,
+          "",
+          `Total carregado: ${all.length}`,
+          `Página ${page}/${totalPages} — ${slice.length} de ${total} resultado(s)`,
+          "",
+          "| ID | Título | Situação | Executor | Esforço (min) |",
+          "|----|--------|----------|----------|---------------|",
+          ...output.items.map((t) => `| ${t.id} | ${t.title} | ${t.situation} | ${t.executor_name} | ${t.estimated_time} |`),
+          "",
+          hasMore ? `➡️ Mais resultados na página ${nextPage}` : "✅ Fim dos resultados.",
+        ].join("\n");
+
+        return { content: [{ type: "text" as const, text: formatResponse(output, markdown, params.response_format) }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: handleApiError(error) }] };
       }
